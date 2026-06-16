@@ -51,7 +51,7 @@ container (Docker) configured for JSON API access on `127.0.0.1:8888`.
 
 ```sh
 ./build/local_code                 # pick a model from a menu at startup
-./build/local_code --model gemma4:latest
+./build/local_code --model qwen2.5-coder:7b
 ./build/local_code --budget 2048   # tighter context budget for weak models
 ./build/local_code --yolo          # skip y/N confirmation (dangerous)
 ./build/local_code --plan          # start in planning mode (no changes)

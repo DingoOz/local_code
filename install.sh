@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SEARXNG_PORT=8888
 SEARXNG_DIR="${SCRIPT_DIR}/searxng"
+RECOMMENDED_MODEL="qwen2.5-coder:7b"
 
 say()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[warn]\033[0m %s\n' "$*"; }
@@ -48,7 +49,27 @@ build_app() {
   say "Built: $SCRIPT_DIR/build/local_code"
 }
 
-# --- 3. Optional: SearXNG for web search ------------------------------------
+# --- 3. Optional: recommended Ollama model ----------------------------------
+setup_model() {
+  if ! command -v ollama >/dev/null 2>&1; then
+    warn "Ollama not found. Install it from https://ollama.com then run:"
+    echo "      ollama pull ${RECOMMENDED_MODEL}"
+    return
+  fi
+  if ollama list 2>/dev/null | grep -q "${RECOMMENDED_MODEL%%:*}"; then
+    say "Ollama model '${RECOMMENDED_MODEL}' already present."
+    return
+  fi
+  echo
+  say "Recommended model: ${RECOMMENDED_MODEL} (~4.7 GB, clean tool-calling)."
+  if ask_yes "Pull it now with Ollama?"; then
+    ollama pull "${RECOMMENDED_MODEL}"
+  else
+    say "Skipping. Pull later with: ollama pull ${RECOMMENDED_MODEL}"
+  fi
+}
+
+# --- 4. Optional: SearXNG for web search ------------------------------------
 ensure_docker() {
   if command -v docker >/dev/null 2>&1; then return 0; fi
   say "Docker not found; installing docker.io..."
@@ -117,6 +138,7 @@ main() {
   require_apt
   install_build_deps
   build_app
+  setup_model
 
   echo
   if ask_yes "Enable web search via a local SearXNG server (installs Docker if needed)?"; then
@@ -130,7 +152,8 @@ main() {
   echo "    $SCRIPT_DIR/build/local_code"
   echo
   echo "Notes:"
-  echo "  - Requires Ollama running locally (https://ollama.com)."
+  echo "  - Requires Ollama running locally (https://ollama.com);"
+  echo "    recommended model: ${RECOMMENDED_MODEL}."
   echo "  - Web search auto-detects SearXNG at http://localhost:${SEARXNG_PORT}"
   echo "    (override with --searxng URL; disable with --no-web)."
 }
