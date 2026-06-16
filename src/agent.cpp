@@ -93,10 +93,10 @@ void Agent::handle(const std::string& user_input) {
         console_.print(tail + "\n");
         reply += tail;
 
-        // Some local models emit a blank turn (e.g. a lone stray marker) mid-
-        // task instead of continuing. Nudge them a couple of times rather than
-        // silently handing control back.
-        if (reply.find_first_not_of(" \t\r\n") == std::string::npos) {
+        // Some local models emit a blank turn (whitespace, or just a stray
+        // "```" fence) mid-task instead of continuing. Nudge them a couple of
+        // times rather than silently handing control back.
+        if (reply.find_first_not_of(" \t\r\n`") == std::string::npos) {
             if (++empty_retries > 2) {
                 console_.print(
                     "\033[33m[the model went quiet — type to continue]\033[0m\n");

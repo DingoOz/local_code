@@ -57,6 +57,50 @@ std::string sanitize_json(const std::string& in) {
     return out;
 }
 
+// Quote bare/unquoted object keys, e.g. {query: "x"} -> {"query": "x"}. Some
+// models emit JS-ish objects without quoting keys; valid JSON is unchanged.
+std::string quote_bare_keys(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + 16);
+    bool in_str = false, esc = false;
+    for (size_t i = 0; i < in.size();) {
+        char c = in[i];
+        if (in_str) {
+            out += c;
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') in_str = false;
+            ++i;
+            continue;
+        }
+        if (c == '"') { in_str = true; out += c; ++i; continue; }
+        if (c == '{' || c == ',') {
+            out += c;
+            ++i;
+            size_t j = i;
+            while (j < in.size() && std::isspace((unsigned char)in[j])) ++j;
+            size_t s = j;
+            while (j < in.size() &&
+                   (std::isalnum((unsigned char)in[j]) || in[j] == '_'))
+                ++j;
+            size_t e = j;
+            size_t m = j;
+            while (m < in.size() && std::isspace((unsigned char)in[m])) ++m;
+            if (e > s && m < in.size() && in[m] == ':') {
+                out.append(in, i, s - i);  // whitespace before the key
+                out += '"';
+                out.append(in, s, e - s);  // the bare key
+                out += '"';
+                i = e;
+            }
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    return out;
+}
+
 const char* const kToolNames[] = {"read_file",   "write_file", "list_dir",
                                   "run_command", "ask_user",   "web_search"};
 
@@ -89,7 +133,9 @@ std::optional<json> scan_object(const std::string& text, size_t from,
             } else if (c == '}') {
                 if (--depth == 0) {
                     std::string cand = text.substr(i, j - i + 1);
-                    for (const std::string& v : {cand, sanitize_json(cand)}) {
+                    std::string san = sanitize_json(cand);
+                    for (const std::string& v :
+                         {cand, san, quote_bare_keys(san)}) {
                         json o = json::parse(v, nullptr, false);
                         if (!o.is_discarded() && o.is_object()) return o;
                     }

@@ -102,9 +102,10 @@ private:
                                                            "<|channel|>"};
     static constexpr std::array<std::string_view, 2> kClose{"<channel|>",
                                                             "<|message|>"};
-    static constexpr std::array<std::string_view, 8> kStrip{
-        "<channel|>",  "<|message|>", "<|end|>",    "<|start|>",
-        "<|im_end|>",  "<|im_start|>", "<|return|>", "<|tool_call>"};
+    static constexpr std::array<std::string_view, 9> kStrip{
+        "<channel|>",   "<|message|>",  "<|end|>",      "<|start|>",
+        "<|im_end|>",   "<|im_start|>", "<|return|>",   "<|tool_call>",
+        "<tool_call|>"};
 
     State state_ = State::Normal;
     size_t suppressed_ = 0;

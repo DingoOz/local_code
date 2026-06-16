@@ -69,6 +69,18 @@ int main() {
         "{\"path\":\"a.txt\",\"content\":\"hi\"}}\n```\n```file\nIGNORED\n```");
     assert(k && k->content == "hi");
 
+    // Malformed call the gemma coder model emits: unquoted key, no name/args
+    // wrapper, a "call:" prefix and a trailing marker. Must still parse.
+    auto m = parse_tool_call(
+        "call:web_search{query: \"latest version of Qt\"}<tool_call|>");
+    assert(m && m->name == "web_search" &&
+           m->query == "latest version of Qt");
+
+    // Unquoted keys inside a normal wrapped call.
+    auto p = parse_tool_call(
+        "```tool\n{name: \"run_command\", args: {cmd: \"ls -a\"}}\n```");
+    assert(p && p->name == "run_command" && p->cmd == "ls -a");
+
     std::cout << "PARSE TESTS PASS\n";
     return 0;
 }
