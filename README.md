@@ -37,6 +37,16 @@ cmake --build build -j
 
 Produces `build/local_code`.
 
+### Quick install (Ubuntu/Debian)
+
+```sh
+./install.sh
+```
+
+Installs build dependencies, builds the binary, and **optionally** sets up web
+search by running a local [SearXNG](https://github.com/searxng/searxng)
+container (Docker) configured for JSON API access on `127.0.0.1:8888`.
+
 ## Usage
 
 ```sh
@@ -60,6 +70,9 @@ Produces `build/local_code`.
 | `--plan` | Start in planning mode (no writes/commands) |
 | `--think` | Enable model "thinking" (off by default) |
 | `--no-tui` | Disable the ncurses TUI (plain output) |
+| `--searxng URL` | SearXNG base URL (default `http://localhost:8888`) |
+| `--web` | Force-enable web search (skip the probe) |
+| `--no-web` | Disable web search |
 
 ### REPL commands
 
@@ -73,6 +86,17 @@ around the screen, a scrolling conversation area, inline input with history
 (polled from `nvidia-smi` on a background thread). When stdin/stdout are piped
 or redirected — or with `--no-tui` — it falls back to a plain line-based stream,
 so scripting and non-interactive use still work.
+
+### Web search (local SearXNG)
+
+If a local [SearXNG](https://github.com/searxng/searxng) instance is reachable,
+the agent gains a read-only `web_search` tool backed by SearXNG's JSON API — no
+third-party API key, all local. On startup the app probes the configured URL
+(default `http://localhost:8888`); when found, the banner shows `web` and the
+tool is advertised to the model (in build *and* planning mode). Enable it the
+easy way with `./install.sh`, or point at an existing instance with
+`--searxng URL`. A refused connection is instant, so there's no startup penalty
+when it isn't running.
 
 ### Planning mode
 
@@ -92,8 +116,8 @@ ready to implement. The prompt shows `you (plan)>` while planning.
   (produced by a one-shot model call) once the budget is exceeded. The system
   prompt is always retained on top.
 - **tools** — parses a ` ```tool {json} ``` ` block from the model and executes
-  `read_file` / `list_dir` / `write_file` / `run_command` / `ask_user`,
-  returning the result (truncated to caps). The parser is forgiving of weak-model
+  `read_file` / `list_dir` / `write_file` / `run_command` / `ask_user` /
+  `web_search`, returning the result (truncated to caps). The parser is forgiving of weak-model
   output: brace-matched extraction, JSON-escape repair (raw newlines, backslash
   line-continuations), and the common name placements — `{"name":..,"args":..}`,
   flat `{"name":..,"path":..}`, and name-on-its-own-line `write_file\n{..}`.

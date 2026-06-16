@@ -10,6 +10,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "web_search.hpp"
+
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -55,8 +57,8 @@ std::string sanitize_json(const std::string& in) {
     return out;
 }
 
-const char* const kToolNames[] = {"read_file", "write_file", "list_dir",
-                                  "run_command", "ask_user"};
+const char* const kToolNames[] = {"read_file",   "write_file", "list_dir",
+                                  "run_command", "ask_user",   "web_search"};
 
 bool is_tool_name(const std::string& s) {
     for (const char* n : kToolNames)
@@ -210,6 +212,28 @@ ToolResult do_run(const ToolCall& c, const Config& cfg, Console& console) {
     return {code == 0, result};
 }
 
+ToolResult do_web_search(const ToolCall& c, const Config& cfg) {
+    if (!cfg.web_enabled)
+        return {false,
+                "web_search is unavailable (no local SearXNG configured)."};
+    if (c.query.empty()) return {false, "web_search needs a 'query'."};
+
+    auto results = web_search(cfg.searxng_url, c.query, 5);
+    if (!results)
+        return {false, "web_search failed: SearXNG unreachable at " +
+                           cfg.searxng_url};
+    if (results->empty()) return {true, "No web results for: " + c.query};
+
+    std::ostringstream ss;
+    ss << "Top web results for \"" << c.query << "\":\n";
+    int i = 1;
+    for (const auto& r : *results) {
+        ss << i++ << ". " << r.title << "\n   " << r.url << "\n";
+        if (!r.content.empty()) ss << "   " << truncate(r.content, 240) << "\n";
+    }
+    return {true, ss.str()};
+}
+
 }  // namespace
 
 std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
@@ -260,6 +284,7 @@ std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
     c.content = str("content");
     c.cmd = str("cmd");
     c.question = str("question");
+    c.query = str("query");
 
     // For write_file, the body normally arrives in a separate ```file fence
     // after the tool block (far more reliable than a JSON-escaped string). Use
@@ -288,9 +313,10 @@ ToolResult execute_tool(const ToolCall& call, const Config& cfg,
     if (call.name == "write_file")  return do_write(call, cfg, console);
     if (call.name == "run_command") return do_run(call, cfg, console);
     if (call.name == "ask_user")    return do_ask(call, console);
+    if (call.name == "web_search")  return do_web_search(call, cfg);
     return {false, "Error: unknown tool '" + call.name +
                        "'. Valid tools: read_file, list_dir, write_file, "
-                       "run_command, ask_user."};
+                       "run_command, ask_user, web_search."};
 }
 
 }  // namespace lc

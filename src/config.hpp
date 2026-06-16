@@ -28,6 +28,12 @@ struct Config {
     // Disable the ncurses TUI even on a terminal (use the plain stream).
     bool no_tui = false;
 
+    // Web search via a local SearXNG instance.
+    std::string searxng_url = "http://localhost:8888";
+    bool web_forced = false;   // --web: enable without probing
+    bool no_web = false;       // --no-web: never use web search
+    bool web_enabled = false;  // resolved at startup (probe or forced)
+
     // Safety / sizing caps.
     int max_tool_turns = 12;            // consecutive tool calls before user check-in
     size_t max_read_bytes = 16 * 1024;  // truncate large file reads

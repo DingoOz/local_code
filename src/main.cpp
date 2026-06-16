@@ -18,6 +18,7 @@
 #include "plain_console.hpp"
 #include "system_prompt.hpp"
 #include "tui.hpp"
+#include "web_search.hpp"
 
 using namespace lc;
 
@@ -163,8 +164,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::string build_prompt = load_system_prompt(cfg);
-    const std::string plan_prompt = kPlanSystemPrompt;
+    // Resolve web search: probe the local SearXNG unless disabled. A refused
+    // connection returns instantly, so there's no penalty when it isn't running.
+    if (!cfg.no_web)
+        cfg.web_enabled = cfg.web_forced || web_search_available(cfg.searxng_url);
+
+    std::string build_prompt = load_system_prompt(cfg);
+    std::string plan_prompt = kPlanSystemPrompt;
+    if (cfg.web_enabled) {
+        build_prompt += std::string("\n") + kWebToolLine;
+        plan_prompt += std::string("\n") + kWebToolLine;
+    }
     const std::string initial_prompt =
         cfg.plan_mode ? plan_prompt : build_prompt;
 
@@ -190,6 +200,7 @@ int main(int argc, char** argv) {
                    "' (budget " + std::to_string(cfg.budget_tokens) + " tok" +
                    (cfg.yolo ? ", yolo" : "") +
                    (agent.plan_mode() ? ", PLAN" : "") +
+                   (cfg.web_enabled ? ", web" : "") +
                    "). /help for commands.\n");
 
     while (true) {

@@ -34,10 +34,14 @@ public:
     // false, the model's "thinking" is disabled (so content is reliably
     // populated); when true, thinking deltas are streamed too. Throws on
     // transport/HTTP errors.
-    std::string chat(const std::string& model,
-                     const std::vector<Message>& messages,
-                     const std::function<void(const std::string&)>& on_token,
-                     bool think = false);
+    // stop_when, if set, is called with the accumulated text after each chunk;
+    // returning true ends the stream early (used to stop once a complete tool
+    // call has arrived, instead of waiting out a rambling model).
+    std::string chat(
+        const std::string& model, const std::vector<Message>& messages,
+        const std::function<void(const std::string&)>& on_token,
+        bool think = false,
+        const std::function<bool(const std::string&)>& stop_when = {});
 
 private:
     std::string host_;

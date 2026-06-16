@@ -31,6 +31,14 @@ inline constexpr const char* kSystemPrompt =
     "Rules: one tool per turn; read before you write; keep prose short; use\n"
     "relative paths from the current working directory.";
 
+// Appended to the system prompt only when a local SearXNG instance is
+// reachable, so the tool is advertised exactly when it works.
+inline constexpr const char* kWebToolLine =
+    "You also have web_search: emit a tool block "
+    "{\"name\":\"web_search\",\"args\":{\"query\":\"...\"}} to search the web via "
+    "a local SearXNG server. Use it for current or external information, and "
+    "cite the URLs you rely on.";
+
 // Planning mode: the model reasons about HOW to build something but must not
 // change anything. Mutating tools are disabled by the runtime; read-only
 // inspection and ask_user remain so it can gather context and clarify intent.

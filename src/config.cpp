@@ -18,6 +18,9 @@ void Config::print_usage(const char* argv0) {
         "  --plan           Start in planning mode (no writes/commands)\n"
         "  --think          Enable model thinking (off by default)\n"
         "  --no-tui         Disable the ncurses TUI (plain output)\n"
+        "  --searxng URL    SearXNG base URL (default http://localhost:8888)\n"
+        "  --web            Force-enable web search (skip the probe)\n"
+        "  --no-web         Disable web search\n"
         "  -h, --help       Show this help\n";
 }
 
@@ -61,6 +64,13 @@ bool Config::parse(int argc, char** argv, Config& out, bool& exit_now) {
             out.think = true;
         } else if (!std::strcmp(a, "--no-tui")) {
             out.no_tui = true;
+        } else if (!std::strcmp(a, "--searxng")) {
+            const char* v = need_value(i); if (!v) return false;
+            out.searxng_url = v;
+        } else if (!std::strcmp(a, "--web")) {
+            out.web_forced = true;
+        } else if (!std::strcmp(a, "--no-web")) {
+            out.no_web = true;
         } else {
             std::cerr << "Unknown argument: " << a << "\n";
             print_usage(argv[0]);

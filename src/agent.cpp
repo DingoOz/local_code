@@ -66,6 +66,16 @@ void Agent::handle(const std::string& user_input) {
         // cleaned text for history + tool parsing.
         MarkerFilter filter;
         std::string reply;
+        // Stop generating as soon as a complete tool call has arrived — some
+        // models ramble (or emit garbage) after the tool block. write_file is
+        // the exception: wait for its ```file content fence to close.
+        auto stop_when = [](const std::string& full) -> bool {
+            if (full.find('{') == std::string::npos) return false;
+            auto c = parse_tool_call(full);
+            if (!c) return false;
+            if (c->name == "write_file" && c->content.empty()) return false;
+            return true;
+        };
         try {
             client_.chat(cfg_.model, window,
                          [&](const std::string& piece) {
@@ -73,7 +83,7 @@ void Agent::handle(const std::string& user_input) {
                              console_.print(vis);
                              reply += vis;
                          },
-                         cfg_.think);
+                         cfg_.think, stop_when);
         } catch (const std::exception& e) {
             console_.print(std::string("\n\033[31m[error] ") + e.what() +
                            "\033[0m\n");

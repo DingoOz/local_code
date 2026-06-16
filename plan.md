@@ -139,8 +139,51 @@ by a TUI hotkey so the UI stays responsive.
 
 ---
 
+## Web search via local SearXNG
+
+**Goal:** give the agent a `web_search` tool backed by a **local
+[SearXNG](https://github.com/searxng/searxng) instance**, so it can look up
+current/external information without any third-party API key — consistent with
+the local-first design.
+
+### Approach
+
+- SearXNG runs locally (Docker is the simplest deployment) and exposes a JSON
+  search API: `GET http://<host>/search?q=<query>&format=json`. The JSON format
+  must be enabled in SearXNG's `settings.yml` (`search.formats: [html, json]`).
+- A small libcurl client (`src/web_search.*`) issues the GET, parses the
+  `results[]` array (title / url / content) and returns the top N concisely so
+  the model's context stays small.
+- A new `web_search {"query"}` tool is exposed to the model. It is **read-only**,
+  so it is permitted in planning mode too (useful for research).
+
+### Detection & configuration
+
+- `--searxng URL` sets the instance (default `http://localhost:8888`).
+- On startup the app probes the JSON API; if reachable, `web_search` is enabled
+  and added to the system prompt. A refused connection is instant, so there's no
+  startup penalty when SearXNG isn't running.
+- `--web` forces it on (skip probe); `--no-web` disables it entirely.
+
+### Installer
+
+`install.sh` (Ubuntu) builds the app and **offers** to set up web search: if the
+user opts in, it installs Docker (if needed), runs the `searxng/searxng`
+container bound to `127.0.0.1:8888`, and writes a `settings.yml` that enables the
+JSON API. The app then auto-detects it on next launch.
+
+### Status: implemented (tool + client + installer); see `src/web_search.*`.
+
 ## Other planned work (backlog)
 
+- **Offline knowledge via Kiwix** — as a future option, query a local
+  [Kiwix](https://kiwix.org) server (`kiwix-serve`) hosting ZIM archives
+  (offline Wikipedia, Stack Exchange, dev docs, etc.). This would add an
+  offline-first counterpart to web search: when no internet/SearXNG is
+  available, the agent could still retrieve reference content. Likely shape: a
+  `kiwix_search` tool (or a `--kiwix URL` source that `web_search` falls back to)
+  hitting Kiwix's search/suggest API, with the installer optionally fetching
+  `kiwix-serve` and a chosen ZIM. Fully local, no network required.
 - **AMD/Intel GPU stats** in the status bar (`rocm-smi` / `intel_gpu_top`),
   alongside the existing NVIDIA path.
 - **Optional sandboxing** for `run_command` (container / restricted shell).
@@ -153,5 +196,6 @@ by a TUI hotkey so the UI stays responsive.
 1. ✅ Core agent + tools + context management.
 2. ✅ Planning mode, model bootstrap, weak-model robustness.
 3. ✅ ncurses TUI with GPU status bar and category colors.
-4. ⏭ **Whisper STT voice input** (this document).
-5. ⏳ Broader GPU vendor support + session persistence.
+4. ✅ Web search via local SearXNG (`web_search` tool + installer).
+5. ⏭ **Whisper STT voice input** (this document).
+6. ⏳ Broader GPU vendor support + session persistence.

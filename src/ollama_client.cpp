@@ -26,6 +26,8 @@ struct StreamCtx {
     std::string buffer;                                  // unparsed tail
     std::string full;                                    // accumulated content
     const std::function<void(const std::string&)>* on_token;
+    const std::function<bool(const std::string&)>* stop_when = nullptr;
+    bool stopped = false;                                // early-stop requested
 };
 
 void process_line(StreamCtx* ctx, const std::string& line) {
@@ -59,6 +61,13 @@ size_t write_stream(char* ptr, size_t size, size_t nmemb, void* userdata) {
         std::string line = ctx->buffer.substr(0, pos);
         ctx->buffer.erase(0, pos + 1);
         process_line(ctx, line);
+    }
+    // Stop early once the caller is satisfied (e.g. a complete tool call).
+    // Returning a short count makes libcurl abort with CURLE_WRITE_ERROR.
+    if (ctx->stop_when && *ctx->stop_when && !ctx->stopped &&
+        (*ctx->stop_when)(ctx->full)) {
+        ctx->stopped = true;
+        return 0;
     }
     return n;
 }
@@ -195,7 +204,8 @@ void OllamaClient::pull_model(
 std::string OllamaClient::chat(
     const std::string& model,
     const std::vector<Message>& messages,
-    const std::function<void(const std::string&)>& on_token, bool think) {
+    const std::function<void(const std::string&)>& on_token, bool think,
+    const std::function<bool(const std::string&)>& stop_when) {
     CURL* curl = static_cast<CURL*>(curl_);
     curl_easy_reset(curl);
 
@@ -212,6 +222,7 @@ std::string OllamaClient::chat(
 
     StreamCtx ctx;
     ctx.on_token = &on_token;
+    ctx.stop_when = &stop_when;
 
     const std::string url = host_ + "/api/chat";
     struct curl_slist* headers = nullptr;
@@ -229,12 +240,14 @@ std::string OllamaClient::chat(
 
     CURLcode rc = curl_easy_perform(curl);
     curl_slist_free_all(headers);
-    if (rc != CURLE_OK) {
+    // A deliberate early stop aborts the transfer with CURLE_WRITE_ERROR; that
+    // is success, not failure.
+    if (rc != CURLE_OK && !(rc == CURLE_WRITE_ERROR && ctx.stopped)) {
         throw std::runtime_error(std::string("Chat request failed: ") +
                                  curl_easy_strerror(rc));
     }
-    // Flush any trailing line without a newline.
-    if (!ctx.buffer.empty()) process_line(&ctx, ctx.buffer);
+    // Flush any trailing line without a newline (not after an early stop).
+    if (!ctx.stopped && !ctx.buffer.empty()) process_line(&ctx, ctx.buffer);
     return ctx.full;
 }
 

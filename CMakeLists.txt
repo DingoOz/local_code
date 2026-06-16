@@ -24,6 +24,7 @@ add_executable(local_code
   src/plain_console.cpp
   src/gpu_monitor.cpp
   src/tui.cpp
+  src/web_search.cpp
 )
 
 target_include_directories(local_code PRIVATE
@@ -45,9 +46,16 @@ add_executable(test_conversation tests/test_conversation.cpp src/conversation.cp
 target_include_directories(test_conversation PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 add_test(NAME conversation COMMAND test_conversation)
 
-add_executable(test_parse tests/test_parse.cpp src/tools.cpp src/config.cpp)
+add_executable(test_parse tests/test_parse.cpp src/tools.cpp src/config.cpp
+               src/web_search.cpp)
 target_include_directories(test_parse PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_parse PRIVATE CURL::libcurl)
 add_test(NAME parse COMMAND test_parse)
 
 add_executable(test_filter tests/test_filter.cpp)
 add_test(NAME filter COMMAND test_filter)
+
+add_executable(test_web tests/test_web.cpp src/web_search.cpp)
+target_include_directories(test_web PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_web PRIVATE CURL::libcurl)
+add_test(NAME web COMMAND test_web)
