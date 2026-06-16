@@ -97,3 +97,10 @@ ready to implement. The prompt shows `you (plan)>` while planning.
 `write_file` and `run_command` prompt before acting unless `--yolo` is set.
 There is **no sandboxing** — commands run with your privileges. Use in a
 directory you trust.
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
+
+The vendored `third_party/nlohmann/json.hpp` is distributed under its own MIT
+license.
