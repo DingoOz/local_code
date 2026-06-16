@@ -10,12 +10,12 @@ context is kept bounded by a sliding window plus automatic summarization.
 
 - [Ollama](https://ollama.com) running locally (default `http://localhost:11434`)
 - **A local GPU capable of running Ollama**, and enough VRAM for the model you
-  pick. This agent is built around the **gemma4** family — most usefully the 12B
-  coder model `hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M`
-  (~7.4 GB on disk), which needs roughly **8 GB+ of VRAM** to run comfortably.
-  Smaller `gemma4:e2b` / `gemma4:e4b` fit on less but are noticeably weaker at the
-  tool protocol. CPU-only inference technically works but is too slow for
-  interactive agentic use.
+  pick. The recommended default is **`qwen2.5-coder:7b`** (~4.7 GB on disk, fits
+  comfortably in **8 GB VRAM**) — it has clean, consistent tool-calling, which
+  matters a lot for an agent. Other coder/instruct models work too; models with
+  weak or inconsistent tool-calling (e.g. some community GGUF merges) produce
+  malformed tool calls that the parser has to repair. CPU-only inference
+  technically works but is too slow for interactive agentic use.
 - C++17 compiler, CMake ≥ 3.16
 - `libcurl` and `ncurses` development headers
   - Debian/Ubuntu: `sudo apt install libcurl4-openssl-dev libncurses-dev`

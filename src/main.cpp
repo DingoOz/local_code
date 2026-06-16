@@ -37,10 +37,9 @@ std::string load_system_prompt(const Config& cfg) {
     return ss.str();
 }
 
-// Suggested when no models are installed: a capable coder model that works well
-// with this agent's tool protocol.
-constexpr const char* kRecommendedModel =
-    "hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M";
+// Suggested when no models are installed: a coder model with clean, consistent
+// tool-calling that works well with this agent's protocol.
+constexpr const char* kRecommendedModel = "qwen2.5-coder:7b";
 
 bool ask_yes(const std::string& prompt) {
     std::cout << prompt << " [y/N]: " << std::flush;
