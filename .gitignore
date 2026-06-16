@@ -1,0 +1,17 @@
+# Build output
+build/
+*.o
+*.obj
+
+# Compiled binaries / test artifacts the agent may produce
+local_code
+hello
+hello_world
+a.out
+*.out
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store

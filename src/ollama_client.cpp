@@ -1,0 +1,155 @@
+#include "ollama_client.hpp"
+
+#include <curl/curl.h>
+
+#include <stdexcept>
+#include <string>
+
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
+
+namespace lc {
+
+namespace {
+
+// Accumulates a simple response body (for non-streaming GET).
+size_t write_to_string(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* out = static_cast<std::string*>(userdata);
+    out->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
+// Streaming state for /api/chat: Ollama emits newline-delimited JSON objects.
+// We buffer partial bytes and process one complete line at a time.
+struct StreamCtx {
+    std::string buffer;                                  // unparsed tail
+    std::string full;                                    // accumulated content
+    const std::function<void(const std::string&)>* on_token;
+};
+
+void process_line(StreamCtx* ctx, const std::string& line) {
+    if (line.empty()) return;
+    json obj = json::parse(line, nullptr, /*allow_exceptions=*/false);
+    if (obj.is_discarded()) return;  // skip malformed/partial lines defensively
+    if (obj.contains("error")) {
+        throw std::runtime_error("Ollama error: " + obj["error"].get<std::string>());
+    }
+    if (obj.contains("message")) {
+        const json& m = obj["message"];
+        // Stream thinking (when present) before content, so reasoning shows and
+        // a model that emits only thinking never looks blank.
+        for (const char* field : {"thinking", "content"}) {
+            if (!m.contains(field) || !m[field].is_string()) continue;
+            const std::string piece = m[field].get<std::string>();
+            if (piece.empty()) continue;
+            ctx->full += piece;
+            if (ctx->on_token && *ctx->on_token) (*ctx->on_token)(piece);
+        }
+    }
+}
+
+size_t write_stream(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* ctx = static_cast<StreamCtx*>(userdata);
+    const size_t n = size * nmemb;
+    ctx->buffer.append(ptr, n);
+
+    size_t pos;
+    while ((pos = ctx->buffer.find('\n')) != std::string::npos) {
+        std::string line = ctx->buffer.substr(0, pos);
+        ctx->buffer.erase(0, pos + 1);
+        process_line(ctx, line);
+    }
+    return n;
+}
+
+}  // namespace
+
+OllamaClient::OllamaClient(std::string host) : host_(std::move(host)) {
+    if (!host_.empty() && host_.back() == '/') host_.pop_back();
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl_ = curl_easy_init();
+    if (!curl_) throw std::runtime_error("Failed to init libcurl");
+}
+
+OllamaClient::~OllamaClient() {
+    if (curl_) curl_easy_cleanup(static_cast<CURL*>(curl_));
+    curl_global_cleanup();
+}
+
+std::vector<std::string> OllamaClient::list_models() {
+    CURL* curl = static_cast<CURL*>(curl_);
+    curl_easy_reset(curl);
+    std::string body;
+    const std::string url = host_ + "/api/tags";
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+    CURLcode rc = curl_easy_perform(curl);
+    if (rc != CURLE_OK) {
+        throw std::runtime_error(std::string("Cannot reach Ollama at ") + url +
+                                 ": " + curl_easy_strerror(rc));
+    }
+
+    json obj = json::parse(body, nullptr, false);
+    if (obj.is_discarded() || !obj.contains("models")) {
+        throw std::runtime_error("Unexpected /api/tags response");
+    }
+    std::vector<std::string> names;
+    for (const auto& m : obj["models"]) {
+        if (m.contains("name")) names.push_back(m["name"].get<std::string>());
+    }
+    return names;
+}
+
+std::string OllamaClient::chat(
+    const std::string& model,
+    const std::vector<Message>& messages,
+    const std::function<void(const std::string&)>& on_token, bool think) {
+    CURL* curl = static_cast<CURL*>(curl_);
+    curl_easy_reset(curl);
+
+    json payload;
+    payload["model"] = model;
+    payload["stream"] = true;
+    payload["think"] = think;
+    json msgs = json::array();
+    for (const auto& m : messages) {
+        msgs.push_back({{"role", role_to_api(m.role)}, {"content", m.content}});
+    }
+    payload["messages"] = std::move(msgs);
+    const std::string body = payload.dump();
+
+    StreamCtx ctx;
+    ctx.on_token = &on_token;
+
+    const std::string url = host_ + "/api/chat";
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_stream);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    // No total timeout: local generation can be slow on large models.
+
+    CURLcode rc = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    if (rc != CURLE_OK) {
+        throw std::runtime_error(std::string("Chat request failed: ") +
+                                 curl_easy_strerror(rc));
+    }
+    // Flush any trailing line without a newline.
+    if (!ctx.buffer.empty()) process_line(&ctx, ctx.buffer);
+    return ctx.full;
+}
+
+}  // namespace lc
