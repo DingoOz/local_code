@@ -17,6 +17,7 @@ void Config::print_usage(const char* argv0) {
         "  --yolo           Auto-execute tools without y/N confirmation\n"
         "  --plan           Start in planning mode (no writes/commands)\n"
         "  --think          Enable model thinking (off by default)\n"
+        "  --no-tui         Disable the ncurses TUI (plain output)\n"
         "  -h, --help       Show this help\n";
 }
 
@@ -58,6 +59,8 @@ bool Config::parse(int argc, char** argv, Config& out, bool& exit_now) {
             out.plan_mode = true;
         } else if (!std::strcmp(a, "--think")) {
             out.think = true;
+        } else if (!std::strcmp(a, "--no-tui")) {
+            out.no_tui = true;
         } else {
             std::cerr << "Unknown argument: " << a << "\n";
             print_usage(argv[0]);

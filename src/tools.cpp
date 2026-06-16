@@ -139,13 +139,6 @@ std::string truncate(std::string s, size_t cap) {
     return s;
 }
 
-bool confirm(const std::string& prompt) {
-    std::cout << prompt << " [y/N] " << std::flush;
-    std::string line;
-    if (!std::getline(std::cin, line)) return false;
-    return line == "y" || line == "Y" || line == "yes";
-}
-
 ToolResult do_read(const ToolCall& c, const Config& cfg) {
     std::ifstream f(c.path, std::ios::binary);
     if (!f) return {false, "Error: cannot open '" + c.path + "'"};
@@ -168,11 +161,12 @@ ToolResult do_list(const ToolCall& c) {
     return {true, out.empty() ? "(empty directory)" : out};
 }
 
-ToolResult do_write(const ToolCall& c, const Config& cfg) {
-    std::cout << "\n--- write_file: " << c.path << " ("
-              << c.content.size() << " bytes) ---\n"
-              << truncate(c.content, 1200) << "\n----------------------------\n";
-    if (!cfg.yolo && !confirm("Write this file?"))
+ToolResult do_write(const ToolCall& c, const Config& cfg, Console& console) {
+    console.print("\n--- write_file: " + c.path + " (" +
+                  std::to_string(c.content.size()) + " bytes) ---\n" +
+                  truncate(c.content, 1200) +
+                  "\n----------------------------\n");
+    if (!cfg.yolo && !console.confirm("Write this file?"))
         return {false, "User declined the write."};
 
     std::error_code ec;
@@ -185,21 +179,19 @@ ToolResult do_write(const ToolCall& c, const Config& cfg) {
                       " bytes to " + c.path};
 }
 
-ToolResult do_ask(const ToolCall& c) {
+ToolResult do_ask(const ToolCall& c, Console& console) {
     std::string q = c.question.empty() ? "(the agent asked a question)"
                                        : c.question;
-    std::cout << "\n\033[35m[agent asks]\033[0m " << q << "\n";
-    std::cout << "\033[35myour answer>\033[0m " << std::flush;
-    std::string line;
-    if (!std::getline(std::cin, line))
-        return {false, "User gave no answer (input closed)."};
-    return {true, "User answered: " + line};
+    console.print("\n\033[35m[agent asks]\033[0m " + q + "\n");
+    auto line = console.input("\033[35myour answer>\033[0m ");
+    if (!line) return {false, "User gave no answer (input closed)."};
+    return {true, "User answered: " + *line};
 }
 
-ToolResult do_run(const ToolCall& c, const Config& cfg) {
-    std::cout << "\n--- run_command ---\n$ " << c.cmd
-              << "\n-------------------\n";
-    if (!cfg.yolo && !confirm("Run this command?"))
+ToolResult do_run(const ToolCall& c, const Config& cfg, Console& console) {
+    console.print("\n--- run_command ---\n$ " + c.cmd +
+                  "\n-------------------\n");
+    if (!cfg.yolo && !console.confirm("Run this command?"))
         return {false, "User declined the command."};
 
     // Merge stderr into stdout so the model sees errors too.
@@ -279,7 +271,8 @@ std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
     return c;
 }
 
-ToolResult execute_tool(const ToolCall& call, const Config& cfg) {
+ToolResult execute_tool(const ToolCall& call, const Config& cfg,
+                        Console& console) {
     // In planning mode, mutating tools are disabled — the model should describe
     // the step in its plan instead of performing it.
     if (cfg.plan_mode &&
@@ -292,9 +285,9 @@ ToolResult execute_tool(const ToolCall& call, const Config& cfg) {
 
     if (call.name == "read_file")   return do_read(call, cfg);
     if (call.name == "list_dir")    return do_list(call);
-    if (call.name == "write_file")  return do_write(call, cfg);
-    if (call.name == "run_command") return do_run(call, cfg);
-    if (call.name == "ask_user")    return do_ask(call);
+    if (call.name == "write_file")  return do_write(call, cfg, console);
+    if (call.name == "run_command") return do_run(call, cfg, console);
+    if (call.name == "ask_user")    return do_ask(call, console);
     return {false, "Error: unknown tool '" + call.name +
                        "'. Valid tools: read_file, list_dir, write_file, "
                        "run_command, ask_user."};

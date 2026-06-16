@@ -4,6 +4,7 @@
 #include <string>
 
 #include "config.hpp"
+#include "io.hpp"
 
 namespace lc {
 
@@ -29,7 +30,9 @@ struct ToolResult {
 std::optional<ToolCall> parse_tool_call(const std::string& assistant_text);
 
 // Execute a tool. write_file / run_command prompt for y/N confirmation unless
-// cfg.yolo is set. Output is truncated per cfg caps.
-ToolResult execute_tool(const ToolCall& call, const Config& cfg);
+// cfg.yolo is set. Output is truncated per cfg caps. Previews and prompts are
+// rendered through `console`.
+ToolResult execute_tool(const ToolCall& call, const Config& cfg,
+                        Console& console);
 
 }  // namespace lc

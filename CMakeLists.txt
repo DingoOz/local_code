@@ -10,13 +10,9 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(CURL REQUIRED)
-
-# GNU readline (no standard CMake module; locate manually)
-find_path(READLINE_INCLUDE_DIR readline/readline.h)
-find_library(READLINE_LIBRARY NAMES readline)
-if(NOT READLINE_INCLUDE_DIR OR NOT READLINE_LIBRARY)
-  message(FATAL_ERROR "GNU readline not found (install libreadline-dev)")
-endif()
+find_package(Curses REQUIRED)   # ncurses, for the TUI
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)  # for the GPU monitor thread
 
 add_executable(local_code
   src/main.cpp
@@ -25,16 +21,20 @@ add_executable(local_code
   src/conversation.cpp
   src/tools.cpp
   src/agent.cpp
+  src/plain_console.cpp
+  src/gpu_monitor.cpp
+  src/tui.cpp
 )
 
 target_include_directories(local_code PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party   # vendored nlohmann/json single header
-  ${READLINE_INCLUDE_DIR}
+  ${CURSES_INCLUDE_DIRS}
 )
 
 target_link_libraries(local_code PRIVATE
   CURL::libcurl
-  ${READLINE_LIBRARY}
+  ${CURSES_LIBRARIES}
+  Threads::Threads
 )
 
 target_compile_options(local_code PRIVATE -Wall -Wextra)

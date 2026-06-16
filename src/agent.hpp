@@ -2,6 +2,7 @@
 
 #include "config.hpp"
 #include "conversation.hpp"
+#include "io.hpp"
 #include "ollama_client.hpp"
 
 namespace lc {
@@ -12,7 +13,7 @@ namespace lc {
 class Agent {
 public:
     Agent(OllamaClient& client, Conversation& convo, Config cfg,
-          std::string build_prompt, std::string plan_prompt);
+          std::string build_prompt, std::string plan_prompt, Console& console);
 
     // Handles a single user message end-to-end. Streams output to stdout.
     void handle(const std::string& user_input);
@@ -27,6 +28,7 @@ private:
     Config cfg_;
     std::string build_prompt_;
     std::string plan_prompt_;
+    Console& console_;
 };
 
 }  // namespace lc

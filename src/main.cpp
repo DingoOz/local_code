@@ -1,10 +1,10 @@
-#include <readline/history.h>
-#include <readline/readline.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -12,8 +12,12 @@
 #include "agent.hpp"
 #include "config.hpp"
 #include "conversation.hpp"
+#include "gpu_monitor.hpp"
+#include "io.hpp"
 #include "ollama_client.hpp"
+#include "plain_console.hpp"
 #include "system_prompt.hpp"
+#include "tui.hpp"
 
 using namespace lc;
 
@@ -132,22 +136,15 @@ Conversation::Summarizer make_summarizer(OllamaClient& client,
     };
 }
 
-void print_help() {
-    std::cout <<
-        "Commands:\n"
-        "  /help    show this help\n"
-        "  /plan    enter planning mode (design & ask questions, no changes)\n"
-        "  /build   enter build mode (can write files / run commands)\n"
-        "  /reset   clear the conversation (keeps system prompt)\n"
-        "  /model   show the active model\n"
-        "  /quit    exit\n"
-        "Anything else is sent to the agent.\n";
-}
-
-std::string history_path() {
-    const char* home = std::getenv("HOME");
-    return std::string(home ? home : ".") + "/.local_code_history";
-}
+const char* kHelpText =
+    "Commands:\n"
+    "  /help    show this help\n"
+    "  /plan    enter planning mode (design & ask questions, no changes)\n"
+    "  /build   enter build mode (can write files / run commands)\n"
+    "  /reset   clear the conversation (keeps system prompt)\n"
+    "  /model   show the active model\n"
+    "  /quit    exit\n"
+    "Anything else is sent to the agent.\n";
 
 }  // namespace
 
@@ -173,61 +170,70 @@ int main(int argc, char** argv) {
 
     Conversation convo(initial_prompt, cfg.budget_tokens);
     convo.set_summarizer(make_summarizer(client, cfg.model));
-    Agent agent(client, convo, cfg, build_prompt, plan_prompt);
 
-    std::cout << "\nlocal_code — agent on '" << cfg.model
-              << "' (budget " << cfg.budget_tokens << " tok"
-              << (cfg.yolo ? ", yolo" : "")
-              << (agent.plan_mode() ? ", PLAN" : "")
-              << "). /help for commands.\n";
+    // Use the ncurses TUI only on a real terminal; fall back to a plain stream
+    // for piped/redirected I/O (and when --no-tui is set).
+    const bool use_tui = !cfg.no_tui && isatty(STDIN_FILENO) &&
+                         isatty(STDOUT_FILENO);
+    std::unique_ptr<GpuMonitor> gpu;
+    std::unique_ptr<Console> console;
+    if (use_tui) {
+        gpu = std::make_unique<GpuMonitor>();
+        console = std::make_unique<TuiConsole>(*gpu, cfg.model);
+    } else {
+        console = std::make_unique<PlainConsole>();
+    }
 
-    const std::string hist = history_path();
-    read_history(hist.c_str());
+    Agent agent(client, convo, cfg, build_prompt, plan_prompt, *console);
+
+    console->print(std::string("\nlocal_code — agent on '") + cfg.model +
+                   "' (budget " + std::to_string(cfg.budget_tokens) + " tok" +
+                   (cfg.yolo ? ", yolo" : "") +
+                   (agent.plan_mode() ? ", PLAN" : "") +
+                   "). /help for commands.\n");
 
     while (true) {
-        const char* prompt = agent.plan_mode()
-                                 ? "\n\033[35myou (plan)>\033[0m "
-                                 : "\n\033[32myou>\033[0m ";
-        char* raw = readline(prompt);
-        if (!raw) break;  // EOF / Ctrl-D
-        std::string input(raw);
-        free(raw);
+        const std::string prompt = agent.plan_mode()
+                                       ? "\n\033[35myou (plan)>\033[0m "
+                                       : "\n\033[32myou>\033[0m ";
+        auto in = console->input(prompt);
+        if (!in) break;  // EOF / Ctrl-D
+        std::string input = *in;
 
         // Trim trailing whitespace.
         while (!input.empty() && (input.back() == ' ' || input.back() == '\n'))
             input.pop_back();
         if (input.empty()) continue;
 
-        add_history(input.c_str());
-
         if (input == "/quit" || input == "/exit") break;
-        if (input == "/help") { print_help(); continue; }
+        if (input == "/help") { console->print(kHelpText); continue; }
         if (input == "/plan") {
             agent.set_plan_mode(true);
-            std::cout << "Planning mode: I'll design the approach and may ask "
-                         "questions. No files written, no commands run.\n";
+            console->print(
+                "Planning mode: I'll design the approach and may ask "
+                "questions. No files written, no commands run.\n");
             continue;
         }
         if (input == "/build") {
             agent.set_plan_mode(false);
-            std::cout << "Build mode: I can write files and run commands "
-                         "(with confirmation).\n";
+            console->print(
+                "Build mode: I can write files and run commands (with "
+                "confirmation).\n");
             continue;
         }
         if (input == "/model") {
-            std::cout << "Active model: " << cfg.model << "\n";
+            console->print("Active model: " + cfg.model + "\n");
             continue;
         }
         if (input == "/reset") {
             convo.reset();
-            std::cout << "Conversation cleared.\n";
+            console->print("Conversation cleared.\n");
             continue;
         }
 
         agent.handle(input);
     }
 
-    write_history(hist.c_str());
-    std::cout << "Bye.\n";
+    console->print("Bye.\n");
     return 0;
 }

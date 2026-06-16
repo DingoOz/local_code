@@ -25,6 +25,9 @@ struct Config {
     // looks like a blank reply. When on, reasoning is streamed too.
     bool think = false;
 
+    // Disable the ncurses TUI even on a terminal (use the plain stream).
+    bool no_tui = false;
+
     // Safety / sizing caps.
     int max_tool_turns = 12;            // consecutive tool calls before user check-in
     size_t max_read_bytes = 16 * 1024;  // truncate large file reads

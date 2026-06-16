@@ -17,10 +17,12 @@ context is kept bounded by a sliding window plus automatic summarization.
   tool protocol. CPU-only inference technically works but is too slow for
   interactive agentic use.
 - C++17 compiler, CMake ≥ 3.16
-- `libcurl` and GNU `readline` development headers
-  - Debian/Ubuntu: `sudo apt install libcurl4-openssl-dev libreadline-dev`
+- `libcurl` and `ncurses` development headers
+  - Debian/Ubuntu: `sudo apt install libcurl4-openssl-dev libncurses-dev`
 - `nlohmann/json` is vendored at `third_party/nlohmann/json.hpp` (no download
   needed)
+- `nvidia-smi` (optional) — used for the GPU status bar; without it the bar
+  shows "unavailable"
 
 If no models are installed, the program offers on startup to download the
 recommended coder model for you (via Ollama's pull API) so you can get going
@@ -57,10 +59,20 @@ Produces `build/local_code`.
 | `--yolo` | Auto-execute tools without confirmation |
 | `--plan` | Start in planning mode (no writes/commands) |
 | `--think` | Enable model "thinking" (off by default) |
+| `--no-tui` | Disable the ncurses TUI (plain output) |
 
 ### REPL commands
 
 `/help` `/plan` `/build` `/reset` `/model` `/quit`
+
+### Interface
+
+On a real terminal the program runs as a full-screen **ncurses TUI**: a border
+around the screen, a scrolling conversation area, inline input with history
+(↑/↓), and a **bottom status bar showing live GPU utilization and VRAM usage**
+(polled from `nvidia-smi` on a background thread). When stdin/stdout are piped
+or redirected — or with `--no-tui` — it falls back to a plain line-based stream,
+so scripting and non-interactive use still work.
 
 ### Planning mode
 
