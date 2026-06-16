@@ -21,6 +21,8 @@ void Config::print_usage(const char* argv0) {
         "  --searxng URL    SearXNG base URL (default http://localhost:8888)\n"
         "  --web            Force-enable web search (skip the probe)\n"
         "  --no-web         Disable web search\n"
+        "  --project DIR    Project root (default: current directory)\n"
+        "  --no-project     Disable project awareness / notes\n"
         "  -h, --help       Show this help\n";
 }
 
@@ -71,6 +73,11 @@ bool Config::parse(int argc, char** argv, Config& out, bool& exit_now) {
             out.web_forced = true;
         } else if (!std::strcmp(a, "--no-web")) {
             out.no_web = true;
+        } else if (!std::strcmp(a, "--project")) {
+            const char* v = need_value(i); if (!v) return false;
+            out.project_dir = v;
+        } else if (!std::strcmp(a, "--no-project")) {
+            out.no_project = true;
         } else {
             std::cerr << "Unknown argument: " << a << "\n";
             print_usage(argv[0]);

@@ -39,6 +39,17 @@ inline constexpr const char* kWebToolLine =
     "a local SearXNG server. Use it for current or external information, and "
     "cite the URLs you rely on.";
 
+// Appended (with the dynamic Project::context_block) when project awareness is
+// on. Advertises single-program scope and the remember tool.
+inline constexpr const char* kProjectToolLine =
+    "This session is scoped to ONE project rooted at the current directory; "
+    "every file in it and its subfolders belongs to that single program. Use "
+    "relative paths. You also have remember to save durable project knowledge "
+    "(architecture, build/run commands, conventions, gotchas) to "
+    ".local_code/PROJECT.md, reloaded next session. To use it, emit "
+    "{\"name\":\"remember\",\"args\":{}} then the notes in a ```file fence (exactly "
+    "like write_file). Keep it concise and current.";
+
 // Planning mode: the model reasons about HOW to build something but must not
 // change anything. Mutating tools are disabled by the runtime; read-only
 // inspection and ask_user remain so it can gather context and clarify intent.

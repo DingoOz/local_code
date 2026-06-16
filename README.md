@@ -73,10 +73,12 @@ container (Docker) configured for JSON API access on `127.0.0.1:8888`.
 | `--searxng URL` | SearXNG base URL (default `http://localhost:8888`) |
 | `--web` | Force-enable web search (skip the probe) |
 | `--no-web` | Disable web search |
+| `--project DIR` | Project root (default: current directory) |
+| `--no-project` | Disable project awareness / notes |
 
 ### REPL commands
 
-`/help` `/plan` `/build` `/reset` `/model` `/quit`
+`/help` `/plan` `/build` `/learn` `/project` `/reset` `/model` `/quit`
 
 ### Interface
 
@@ -98,6 +100,19 @@ easy way with `./install.sh`, or point at an existing instance with
 `--searxng URL`. A refused connection is instant, so there's no startup penalty
 when it isn't running.
 
+### Project awareness
+
+Run `local_code` from your project's directory (or pass `--project DIR`). It
+treats that folder and all its subfolders as **one program**: at startup it
+`chdir`s into the root, injects the directory layout into the model's context,
+and tells the model to use relative paths. It also keeps a persistent knowledge
+file at **`.local_code/PROJECT.md`** — the model records durable facts
+(architecture, build/run commands, conventions, gotchas) with a `remember` tool,
+and that file is **auto-loaded into context every session**, so understanding
+carries over. `remember` is disabled in planning mode (no writes). Use `/learn`
+to have the agent scan the project and write the initial notes, and `/project`
+to see the root and notes status. Disable the whole feature with `--no-project`.
+
 ### Planning mode
 
 `--plan` (or `/plan` at runtime) puts the agent in a **design-only** mode: it
@@ -117,7 +132,7 @@ ready to implement. The prompt shows `you (plan)>` while planning.
   prompt is always retained on top.
 - **tools** — parses a ` ```tool {json} ``` ` block from the model and executes
   `read_file` / `list_dir` / `write_file` / `run_command` / `ask_user` /
-  `web_search`, returning the result (truncated to caps). The parser is forgiving of weak-model
+  `web_search` / `remember`, returning the result (truncated to caps). The parser is forgiving of weak-model
   output: brace-matched extraction, JSON-escape repair (raw newlines, backslash
   line-continuations), and the common name placements — `{"name":..,"args":..}`,
   flat `{"name":..,"path":..}`, and name-on-its-own-line `write_file\n{..}`.

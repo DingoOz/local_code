@@ -18,6 +18,7 @@ struct ToolCall {
     std::string cmd;
     std::string question;
     std::string query;
+    std::string notes;
 };
 
 struct ToolResult {

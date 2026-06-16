@@ -16,6 +16,7 @@
 #include "io.hpp"
 #include "ollama_client.hpp"
 #include "plain_console.hpp"
+#include "project.hpp"
 #include "system_prompt.hpp"
 #include "tui.hpp"
 #include "web_search.hpp"
@@ -141,6 +142,8 @@ const char* kHelpText =
     "  /help    show this help\n"
     "  /plan    enter planning mode (design & ask questions, no changes)\n"
     "  /build   enter build mode (can write files / run commands)\n"
+    "  /learn   scan the project and write its notes (.local_code/PROJECT.md)\n"
+    "  /project show the project root and notes status\n"
     "  /reset   clear the conversation (keeps system prompt)\n"
     "  /model   show the active model\n"
     "  /quit    exit\n"
@@ -174,6 +177,24 @@ int main(int argc, char** argv) {
         build_prompt += std::string("\n") + kWebToolLine;
         plan_prompt += std::string("\n") + kWebToolLine;
     }
+
+    // Project awareness: resolve the root + notes path and inject a project
+    // context block (root, layout, persisted notes) into both prompts.
+    Project project(cfg.project_dir);
+    if (!cfg.no_project) {
+        // Operate inside the project so tools (read_file, list_dir,
+        // run_command) and the notes path are all relative to its root.
+        if (chdir(project.root().c_str()) != 0)
+            std::cerr << "Warning: cannot enter project dir '" << project.root()
+                      << "'\n";
+        cfg.project_root = project.root();
+        cfg.notes_path = project.notes_path();
+        const std::string block =
+            std::string("\n") + kProjectToolLine + "\n" + project.context_block();
+        build_prompt += block;
+        plan_prompt += block;
+    }
+
     const std::string initial_prompt =
         cfg.plan_mode ? plan_prompt : build_prompt;
 
@@ -233,6 +254,33 @@ int main(int argc, char** argv) {
         }
         if (input == "/model") {
             console->print("Active model: " + cfg.model + "\n");
+            continue;
+        }
+        if (input == "/project") {
+            if (cfg.no_project) {
+                console->print("Project awareness is disabled.\n");
+            } else {
+                std::ifstream nf(cfg.notes_path);
+                console->print("Project root: " + cfg.project_root + "\n" +
+                               "Notes file:   " + cfg.notes_path + "\n" +
+                               "Notes:        " +
+                               (nf.good() ? "present" : "not created yet") +
+                               "\n");
+            }
+            continue;
+        }
+        if (input == "/learn") {
+            if (cfg.no_project) {
+                console->print("Project awareness is disabled.\n");
+                continue;
+            }
+            agent.handle(
+                "Study this project so you can maintain its notes. Use list_dir "
+                "and read_file to inspect the layout and key files (README, "
+                "build files, main entry points), then call the remember tool "
+                "with a concise PROJECT.md covering: what the project is, how to "
+                "build and run it, the key files/modules, and important "
+                "conventions or gotchas.");
             continue;
         }
         if (input == "/reset") {

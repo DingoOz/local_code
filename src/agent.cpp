@@ -74,6 +74,7 @@ void Agent::handle(const std::string& user_input) {
             auto c = parse_tool_call(full);
             if (!c) return false;
             if (c->name == "write_file" && c->content.empty()) return false;
+            if (c->name == "remember" && c->notes.empty()) return false;
             return true;
         };
         try {

@@ -81,6 +81,20 @@ int main() {
         "```tool\n{name: \"run_command\", args: {cmd: \"ls -a\"}}\n```");
     assert(p && p->name == "run_command" && p->cmd == "ls -a");
 
+    // remember with empty args + notes in a ```file fence.
+    auto rm = parse_tool_call(
+        "```tool\n{\"name\":\"remember\",\"args\":{}}\n```\n"
+        "```file\n# Notes\nbuilds with make\n```");
+    assert(rm && rm->name == "remember" &&
+           rm->notes == "# Notes\nbuilds with make");
+
+    // Malformed JSON ({"notes":}) salvaged via the fence because we're inside a
+    // ```tool fence and the tool name is present.
+    auto rm2 = parse_tool_call(
+        "```tool\n{\"name\":\"remember\",\"args\":{\"notes\":}}\n```\n"
+        "```file\nhello notes\n```");
+    assert(rm2 && rm2->name == "remember" && rm2->notes == "hello notes");
+
     std::cout << "PARSE TESTS PASS\n";
     return 0;
 }

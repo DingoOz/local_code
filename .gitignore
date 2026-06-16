@@ -10,6 +10,9 @@ hello_world
 a.out
 *.out
 
+# Per-project agent knowledge (created when running local_code in a repo)
+.local_code/
+
 # Editor / OS cruft
 .vscode/
 .idea/

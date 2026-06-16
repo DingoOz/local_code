@@ -25,6 +25,7 @@ add_executable(local_code
   src/gpu_monitor.cpp
   src/tui.cpp
   src/web_search.cpp
+  src/project.cpp
 )
 
 target_include_directories(local_code PRIVATE

@@ -34,6 +34,13 @@ struct Config {
     bool no_web = false;       // --no-web: never use web search
     bool web_enabled = false;  // resolved at startup (probe or forced)
 
+    // Project awareness: a single project rooted at project_root, with durable
+    // notes at notes_path. Resolved at startup from --project / the cwd.
+    std::string project_dir;    // --project DIR override (empty => cwd)
+    std::string project_root;   // resolved absolute root
+    std::string notes_path;     // <root>/.local_code/PROJECT.md
+    bool no_project = false;    // --no-project: disable project awareness
+
     // Safety / sizing caps.
     int max_tool_turns = 12;            // consecutive tool calls before user check-in
     size_t max_read_bytes = 16 * 1024;  // truncate large file reads

@@ -102,7 +102,8 @@ std::string quote_bare_keys(const std::string& in) {
 }
 
 const char* const kToolNames[] = {"read_file",   "write_file", "list_dir",
-                                  "run_command", "ask_user",   "web_search"};
+                                  "run_command", "ask_user",   "web_search",
+                                  "remember"};
 
 bool is_tool_name(const std::string& s) {
     for (const char* n : kToolNames)
@@ -280,6 +281,22 @@ ToolResult do_web_search(const ToolCall& c, const Config& cfg) {
     return {true, ss.str()};
 }
 
+ToolResult do_remember(const ToolCall& c, const Config& cfg) {
+    if (cfg.no_project || cfg.notes_path.empty())
+        return {false, "remember is unavailable (project awareness disabled)."};
+    if (c.notes.empty()) return {false, "remember needs 'notes' content."};
+
+    std::error_code ec;
+    fs::path p(cfg.notes_path);
+    if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
+    std::ofstream f(cfg.notes_path, std::ios::binary | std::ios::trunc);
+    if (!f) return {false, "Error: cannot write project notes '" +
+                               cfg.notes_path + "'"};
+    f << c.notes;
+    return {true, "Saved " + std::to_string(c.notes.size()) +
+                      " bytes to project notes (.local_code/PROJECT.md)."};
+}
+
 }  // namespace
 
 std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
@@ -288,10 +305,12 @@ std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
     // Search inside a ```tool fence when present (low false-positive), else the
     // whole message.
     size_t from = 0, to = text.size();
+    bool fenced = false;
     if (size_t f = text.find("```tool"); f != std::string::npos) {
         from = f + 7;
         size_t e = text.find("```", from);
         to = (e == std::string::npos) ? text.size() : e;
+        fenced = true;
     }
 
     auto obj = scan_object(text, from, to);
@@ -312,9 +331,20 @@ std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
             args = *obj;  // object is the args; name comes from a bare token
         }
     }
-    // Only fall back to a bare-name token when we actually have an args object,
-    // so a tool name merely mentioned in prose doesn't trigger a spurious call.
+    // Bare-name fallback when we have a complete args object (e.g. name on its
+    // own line). Requires obj so a half-streamed call can't match early.
     if (name.empty() && obj) name = scan_tool_name(text, from, to);
+
+    // Salvage a malformed/empty tool JSON (e.g. {"notes":}) ONLY for the
+    // fence-based tools and ONLY once their ```file fence has actually arrived —
+    // which never happens mid-stream, so early-stop stays correct.
+    if (name.empty() && fenced) {
+        std::string tok = scan_tool_name(text, from, to);
+        if (tok == "write_file" || tok == "remember") {
+            size_t after = (to < text.size()) ? to + 3 : text.size();
+            if (extract_fenced_content(text, after)) name = tok;
+        }
+    }
 
     if (!is_tool_name(name)) return std::nullopt;
 
@@ -331,6 +361,7 @@ std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
     c.cmd = str("cmd");
     c.question = str("question");
     c.query = str("query");
+    c.notes = str("notes");
 
     // For write_file, the body normally arrives in a separate ```file fence
     // after the tool block (far more reliable than a JSON-escaped string). Use
@@ -339,15 +370,22 @@ std::optional<ToolCall> parse_tool_call(const std::string& assistant_text) {
         size_t after = (to < text.size()) ? to + 3 : text.size();
         if (auto fc = extract_fenced_content(text, after)) c.content = *fc;
     }
+    // remember likewise accepts its (often multi-line) notes from a fence,
+    // which avoids the JSON-escaping fragility of long content in a string.
+    if (c.name == "remember" && c.notes.empty()) {
+        size_t after = (to < text.size()) ? to + 3 : text.size();
+        if (auto fc = extract_fenced_content(text, after)) c.notes = *fc;
+    }
     return c;
 }
 
 ToolResult execute_tool(const ToolCall& call, const Config& cfg,
                         Console& console) {
-    // In planning mode, mutating tools are disabled — the model should describe
-    // the step in its plan instead of performing it.
+    // In planning mode, file-writing tools are disabled — the model should
+    // describe the step in its plan instead of performing it.
     if (cfg.plan_mode &&
-        (call.name == "write_file" || call.name == "run_command")) {
+        (call.name == "write_file" || call.name == "run_command" ||
+         call.name == "remember")) {
         return {false,
                 "Planning mode: '" + call.name +
                     "' is disabled. Do not modify anything yet — describe this "
@@ -360,9 +398,10 @@ ToolResult execute_tool(const ToolCall& call, const Config& cfg,
     if (call.name == "run_command") return do_run(call, cfg, console);
     if (call.name == "ask_user")    return do_ask(call, console);
     if (call.name == "web_search")  return do_web_search(call, cfg);
+    if (call.name == "remember")    return do_remember(call, cfg);
     return {false, "Error: unknown tool '" + call.name +
                        "'. Valid tools: read_file, list_dir, write_file, "
-                       "run_command, ask_user, web_search."};
+                       "run_command, ask_user, web_search, remember."};
 }
 
 }  // namespace lc
