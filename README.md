@@ -9,10 +9,22 @@ context is kept bounded by a sliding window plus automatic summarization.
 ## Requirements
 
 - [Ollama](https://ollama.com) running locally (default `http://localhost:11434`)
+- **A local GPU capable of running Ollama**, and enough VRAM for the model you
+  pick. This agent is built around the **gemma4** family — most usefully the 12B
+  coder model `hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M`
+  (~7.4 GB on disk), which needs roughly **8 GB+ of VRAM** to run comfortably.
+  Smaller `gemma4:e2b` / `gemma4:e4b` fit on less but are noticeably weaker at the
+  tool protocol. CPU-only inference technically works but is too slow for
+  interactive agentic use.
 - C++17 compiler, CMake ≥ 3.16
 - `libcurl` and GNU `readline` development headers
   - Debian/Ubuntu: `sudo apt install libcurl4-openssl-dev libreadline-dev`
-- `nlohmann/json` is vendored at `third_party/json.hpp` (no download needed)
+- `nlohmann/json` is vendored at `third_party/nlohmann/json.hpp` (no download
+  needed)
+
+If no models are installed, the program offers on startup to download the
+recommended coder model for you (via Ollama's pull API) so you can get going
+without a separate `ollama pull`.
 
 ## Build
 

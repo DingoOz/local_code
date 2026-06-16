@@ -1,6 +1,7 @@
 #include <readline/history.h>
 #include <readline/readline.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -31,11 +32,58 @@ std::string load_system_prompt(const Config& cfg) {
     return ss.str();
 }
 
+// Suggested when no models are installed: a capable coder model that works well
+// with this agent's tool protocol.
+constexpr const char* kRecommendedModel =
+    "hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M";
+
+bool ask_yes(const std::string& prompt) {
+    std::cout << prompt << " [y/N]: " << std::flush;
+    std::string line;
+    if (!std::getline(std::cin, line)) return false;
+    return line == "y" || line == "Y" || line == "yes";
+}
+
+// Download a model with a single-line progress indicator. Throws on failure.
+void download_model(OllamaClient& client, const std::string& name) {
+    std::cout << "Downloading " << name << "\n(this can take a while)...\n";
+    std::string last_status;
+    client.pull_model(
+        name, [&](const std::string& status, long long completed,
+                  long long total) {
+            if (total > 0) {
+                std::printf("\r  %-24s %3lld%%  %.2f / %.2f GB        ",
+                            status.c_str(), completed * 100 / total,
+                            completed / 1e9, total / 1e9);
+            } else if (status != last_status) {
+                std::printf("\r  %-48s", status.c_str());
+                last_status = status;
+            }
+            std::fflush(stdout);
+        });
+    std::cout << "\n  Download complete.\n";
+}
+
 // Interactive model picker when --model is not supplied.
 std::string pick_model(OllamaClient& client, const std::string& preset) {
     std::vector<std::string> models = client.list_models();
-    if (models.empty())
-        throw std::runtime_error("No Ollama models found. Pull one first.");
+
+    // No models installed: offer to download one (the preset if given, else the
+    // recommended coder model).
+    if (models.empty()) {
+        const std::string target =
+            preset.empty() ? std::string(kRecommendedModel) : preset;
+        std::cout << "No Ollama models are installed.\n"
+                     "Download this model now? (it may be several GB)\n  "
+                  << target << "\n";
+        if (!ask_yes("Download")) {
+            std::cout << "No model to use — exiting. Pull one with "
+                         "`ollama pull <model>` and run again.\n";
+            std::exit(0);
+        }
+        download_model(client, target);
+        return target;
+    }
 
     if (!preset.empty()) {
         for (const auto& m : models)

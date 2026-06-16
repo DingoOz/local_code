@@ -63,6 +63,46 @@ size_t write_stream(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return n;
 }
 
+// Streaming state for /api/pull: newline-delimited JSON progress objects.
+struct PullCtx {
+    std::string buffer;
+    std::string error;
+    const std::function<void(const std::string&, long long, long long)>* cb;
+};
+
+void pull_line(PullCtx* ctx, const std::string& line) {
+    if (line.empty()) return;
+    json obj = json::parse(line, nullptr, false);
+    if (obj.is_discarded()) return;
+    if (obj.contains("error")) {
+        ctx->error = obj["error"].get<std::string>();
+        return;
+    }
+    const std::string status =
+        obj.contains("status") && obj["status"].is_string()
+            ? obj["status"].get<std::string>()
+            : std::string();
+    auto num = [&](const char* k) -> long long {
+        return obj.contains(k) && obj[k].is_number()
+                   ? obj[k].get<long long>()
+                   : -1;
+    };
+    if (ctx->cb && *ctx->cb) (*ctx->cb)(status, num("completed"), num("total"));
+}
+
+size_t write_pull(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* ctx = static_cast<PullCtx*>(userdata);
+    const size_t n = size * nmemb;
+    ctx->buffer.append(ptr, n);
+    size_t pos;
+    while ((pos = ctx->buffer.find('\n')) != std::string::npos) {
+        std::string line = ctx->buffer.substr(0, pos);
+        ctx->buffer.erase(0, pos + 1);
+        pull_line(ctx, line);
+    }
+    return n;
+}
+
 }  // namespace
 
 OllamaClient::OllamaClient(std::string host) : host_(std::move(host)) {
@@ -104,6 +144,52 @@ std::vector<std::string> OllamaClient::list_models() {
         if (m.contains("name")) names.push_back(m["name"].get<std::string>());
     }
     return names;
+}
+
+void OllamaClient::pull_model(
+    const std::string& name,
+    const std::function<void(const std::string&, long long, long long)>&
+        on_progress) {
+    CURL* curl = static_cast<CURL*>(curl_);
+    curl_easy_reset(curl);
+
+    json payload;
+    payload["name"] = name;
+    payload["stream"] = true;
+    const std::string body = payload.dump();
+
+    PullCtx ctx;
+    ctx.cb = &on_progress;
+
+    const std::string url = host_ + "/api/pull";
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_pull);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    // No total timeout: a model download can take a long time.
+
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    if (rc != CURLE_OK) {
+        throw std::runtime_error(std::string("Pull request failed: ") +
+                                 curl_easy_strerror(rc));
+    }
+    if (!ctx.buffer.empty()) pull_line(&ctx, ctx.buffer);
+    if (!ctx.error.empty())
+        throw std::runtime_error("Pull failed: " + ctx.error);
+    if (http_code >= 400) {
+        throw std::runtime_error("Pull failed: HTTP " +
+                                 std::to_string(http_code) + " from " + url);
+    }
 }
 
 std::string OllamaClient::chat(

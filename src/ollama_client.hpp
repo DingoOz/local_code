@@ -21,6 +21,14 @@ public:
     // GET /api/tags -> model names. Throws std::runtime_error on failure.
     std::vector<std::string> list_models();
 
+    // POST /api/pull (stream) to download a model. Reports progress via
+    // on_progress(status, completed, total); completed/total are -1 when the
+    // server hasn't reported byte counts yet. Throws on error.
+    void pull_model(
+        const std::string& name,
+        const std::function<void(const std::string& status, long long completed,
+                                 long long total)>& on_progress);
+
     // POST /api/chat with stream:true. Calls on_token for each delta as it
     // arrives and returns the full concatenated assistant text. When think is
     // false, the model's "thinking" is disabled (so content is reliably
