@@ -41,6 +41,8 @@ std::string history_file() {
 }
 
 constexpr int kStatusPair = 1;
+// Foreground color pairs use number 2 + COLOR_x (COLOR_BLACK..COLOR_WHITE = 0..7).
+constexpr int kFgPairBase = 2;
 
 }  // namespace
 
@@ -60,6 +62,8 @@ TuiConsole::TuiConsole(GpuMonitor& gpu, std::string model)
         start_color();
         use_default_colors();
         init_pair(kStatusPair, COLOR_WHITE, COLOR_BLUE);
+        // One pair per foreground color over the terminal's default background.
+        for (short c = 0; c < 8; ++c) init_pair(kFgPairBase + c, c, -1);
     }
     layout();
 }
@@ -140,10 +144,72 @@ void TuiConsole::refresh_status_throttled() {
     }
 }
 
+void TuiConsole::apply_attr() {
+    WINDOW* o = static_cast<WINDOW*>(out_);
+    wattr_set(o, cur_bold_ ? A_BOLD : A_NORMAL,
+              static_cast<short>(cur_pair_), nullptr);
+}
+
+// Walk the text, translating ANSI SGR sequences (\033[..m) into ncurses color
+// attributes and writing the literal runs in between. Categories of output keep
+// the same colors they have in plain mode (cyan model label, yellow tool lines,
+// gray results, magenta questions, green/magenta prompts, red errors).
+void TuiConsole::render_ansi(const std::string& text) {
+    WINDOW* o = static_cast<WINDOW*>(out_);
+    size_t i = 0, n = text.size();
+    while (i < n) {
+        if (text[i] == '\033' && i + 1 < n && text[i + 1] == '[') {
+            size_t j = i + 2;
+            while (j < n && text[j] != 'm' &&
+                   (std::isdigit((unsigned char)text[j]) || text[j] == ';'))
+                ++j;
+            if (j < n && text[j] == 'm') {
+                std::string params = text.substr(i + 2, j - (i + 2));
+                // Apply each ';'-separated SGR code.
+                size_t p = 0;
+                bool any = false;
+                while (p <= params.size()) {
+                    size_t sc = params.find(';', p);
+                    std::string tok = params.substr(
+                        p, sc == std::string::npos ? std::string::npos : sc - p);
+                    any = true;
+                    int code = tok.empty() ? 0 : std::atoi(tok.c_str());
+                    if (code == 0) { cur_pair_ = 0; cur_bold_ = false; }
+                    else if (code == 1) cur_bold_ = true;
+                    else if (code == 22) cur_bold_ = false;
+                    else if (code >= 30 && code <= 37)
+                        cur_pair_ = kFgPairBase + (code - 30);
+                    else if (code == 39) cur_pair_ = 0;
+                    else if (code >= 90 && code <= 97) {
+                        cur_pair_ = kFgPairBase + (code - 90);
+                        cur_bold_ = true;  // bright = bold variant
+                    }
+                    if (sc == std::string::npos) break;
+                    p = sc + 1;
+                }
+                if (!any) { cur_pair_ = 0; cur_bold_ = false; }
+                apply_attr();
+                i = j + 1;
+                continue;
+            }
+            i += 2;  // malformed; drop "\033["
+            continue;
+        }
+        size_t k = i;
+        while (k < n && text[k] != '\033') ++k;
+        waddnstr(o, text.c_str() + i, static_cast<int>(k - i));
+        i = k;
+    }
+}
+
 void TuiConsole::print(const std::string& text) {
     WINDOW* o = static_cast<WINDOW*>(out_);
-    std::string clean = strip_ansi(text);
-    waddstr(o, clean.c_str());
+    if (has_colors()) {
+        render_ansi(text);
+    } else {
+        std::string clean = strip_ansi(text);
+        waddstr(o, clean.c_str());
+    }
     wnoutrefresh(o);
     refresh_status_throttled();
     doupdate();

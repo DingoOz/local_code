@@ -162,10 +162,10 @@ ToolResult do_list(const ToolCall& c) {
 }
 
 ToolResult do_write(const ToolCall& c, const Config& cfg, Console& console) {
-    console.print("\n--- write_file: " + c.path + " (" +
-                  std::to_string(c.content.size()) + " bytes) ---\n" +
-                  truncate(c.content, 1200) +
-                  "\n----------------------------\n");
+    console.print("\n\033[36m--- write_file: " + c.path + " (" +
+                  std::to_string(c.content.size()) + " bytes) ---\033[0m\n");
+    console.print(truncate(c.content, 1200));
+    console.print("\n\033[36m----------------------------\033[0m\n");
     if (!cfg.yolo && !console.confirm("Write this file?"))
         return {false, "User declined the write."};
 
@@ -189,8 +189,8 @@ ToolResult do_ask(const ToolCall& c, Console& console) {
 }
 
 ToolResult do_run(const ToolCall& c, const Config& cfg, Console& console) {
-    console.print("\n--- run_command ---\n$ " + c.cmd +
-                  "\n-------------------\n");
+    console.print("\n\033[36m--- run_command ---\033[0m\n\033[1m$ " + c.cmd +
+                  "\033[0m\n\033[36m-------------------\033[0m\n");
     if (!cfg.yolo && !console.confirm("Run this command?"))
         return {false, "User declined the command."};
 

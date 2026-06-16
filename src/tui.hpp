@@ -27,6 +27,8 @@ private:
     void draw_border();
     void draw_status();
     void refresh_status_throttled();
+    void render_ansi(const std::string& text);  // translate ANSI SGR -> ncurses
+    void apply_attr();                           // push cur_pair_/cur_bold_
 
     GpuMonitor& gpu_;
     std::string model_;
@@ -35,6 +37,8 @@ private:
     std::vector<std::string> history_;
     std::string history_path_;
     std::chrono::steady_clock::time_point last_status_{};
+    int cur_pair_ = 0;        // current ncurses color-pair (0 = default)
+    bool cur_bold_ = false;   // current bold state
 };
 
 }  // namespace lc
