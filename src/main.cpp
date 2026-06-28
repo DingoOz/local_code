@@ -127,7 +127,7 @@ std::string pick_model(OllamaClient& client, Config& cfg) {
                  "  g) ornith-gpu-fit — Ornith (" << ornith
               << "), 40K context to fit an 8 GB GPU\n"
                  "  q) ornith-gpu-fit-large — Ornith (" << ornith
-              << "), ~80K context via a q8_0 KV cache (reconfigures Ollama, sudo)\n"
+              << "), 64K context via a q8_0 KV cache (reconfigures Ollama, sudo)\n"
                  "(tip: Ornith auto-enables reasoning + recommended sampling.)\n";
 
     while (true) {

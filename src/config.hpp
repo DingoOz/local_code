@@ -14,11 +14,11 @@ constexpr int kGpuFitNumCtx = 40960;
 // Model selected by --gpu when the user does not pass --model.
 constexpr const char* kGpuFitModel = "ornith:latest";
 
-// GPU-fit context when the Ollama KV cache is quantized (q8_0/q4_0). q8_0 halves
-// the KV bytes/token vs fp16, so roughly double the fp16 window fits the same
-// 8 GB. Conservative default below the estimated ~100K (q8_0) spill cliff;
-// re-measure per the README's procedure if pushing higher.
-constexpr int kGpuFitNumCtxQuant = 81920;  // 80 * 1024
+// GPU-fit context when the Ollama KV cache is quantized (q8_0/q4_0). Measured
+// on an idle 8 GB GPU with q8_0: 72K ctx -> ~6.8 GB stays 100% on the GPU, while
+// ~76K spills to the CPU. Default 64K (~6.6 GB) leaves ~1.6 GB headroom below
+// the cliff; push it with e.g. `--gpu --kv-cache q8_0 --num-ctx 73728`.
+constexpr int kGpuFitNumCtxQuant = 65536;  // 64 * 1024
 
 struct Config {
     std::string host = "http://localhost:11434";

@@ -288,8 +288,9 @@ the lever — **smaller KV bytes/token** is.
 ### Status: implemented. `--kv-cache q8_0|q4_0|f16` (and the picker's
 `q) ornith-gpu-fit-large` shortcut) applies the type via a systemd drop-in +
 service restart (sudo, idempotent), and a quantized cache enlarges the GPU-fit
-context to `kGpuFitNumCtxQuant = 81920`. The 80K figure is an estimate — verify
-and tune per the measurement procedure; fp16 `--gpu` stays at 40960.
+context to `kGpuFitNumCtxQuant = 65536` (64K). Measured with q8_0 on an idle
+8 GB GPU: 72K stays 100% on the GPU, ~76K spills; 64K is the default for
+headroom. fp16 `--gpu` stays at 40960.
 
 ## Other planned work (backlog)
 

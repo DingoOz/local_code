@@ -76,7 +76,7 @@ container (Docker) configured for JSON API access on `127.0.0.1:8888`.
 | `--top-k N` | Top-k sampling (Ornith default `20`) |
 | `--num-ctx N` | Context window in tokens (Ornith defaults to its native `262144`) |
 | `--gpu` | Start on Ornith with a context (`40960`) sized to stay fully on an 8 GB GPU; implies the Ornith model unless `--model` is given |
-| `--kv-cache TYPE` | Ollama KV cache type: `q8_0`/`q4_0` packs a larger GPU context (Ornith ~`81920`), `f16` reverts. Reconfigures Ollama via systemd + sudo |
+| `--kv-cache TYPE` | Ollama KV cache type: `q8_0`/`q4_0` packs a larger GPU context (Ornith `65536`), `f16` reverts. Reconfigures Ollama via systemd + sudo |
 | `--no-tui` | Disable the ncurses TUI (plain output) |
 | `--searxng URL` | SearXNG base URL (default `http://localhost:8888`) |
 | `--web` | Force-enable web search (skip the probe) |
@@ -136,8 +136,9 @@ doesn't fit your VRAM — or use `--gpu`, which selects Ornith and sets a contex
 > fp16 KV cache is what fills VRAM (~50K tokens is the spill cliff on 8 GB; ~1.3
 > GB is held back by llama.cpp for compute buffers and can't be used for KV). To
 > pack a **much larger** window into the same VRAM, quantize the KV cache with
-> `--kv-cache q8_0` (≈ half the bytes/token → ~80K context) or `q4_0` (more
-> still, at some quality cost). Because the KV cache type is a **server-side**
+> `--kv-cache q8_0` (≈ half the bytes/token → 64K context, measured ~75K spill
+> cliff) or `q4_0` (more still, at some quality cost). Because the KV cache type
+> is a **server-side**
 > Ollama setting, this reconfigures Ollama via a systemd drop-in
 > (`OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=…`) and restarts the
 > service — it needs **sudo** and affects all Ollama clients. Revert with
