@@ -292,6 +292,52 @@ context to `kGpuFitNumCtxQuant = 65536` (64K). Measured with q8_0 on an idle
 8 GB GPU: 72K stays 100% on the GPU, ~76K spills; 64K is the default for
 headroom. fp16 `--gpu` stays at 40960.
 
+## Multi-GPU notes & tradeoffs
+
+Context for anyone considering a second GPU to run a bigger context, or
+extending the `--gpu` auto-sizing to multiple cards. Ollama/llama.cpp pool
+multiple NVIDIA GPUs by **splitting the model across them layer-by-layer**.
+
+**What multi-GPU buys: VRAM, not single-stream speed.**
+- For one user, a token's forward pass runs through GPU 0's layers *then*
+  GPU 1's layers — **sequentially**, not in parallel. So two cards do the same
+  work spread out, plus a small **PCIe sync cost** at the split boundary
+  (consumer RTX cards have **no NVLink**). Net effect on tokens/s for a model
+  that already fits one card: **roughly equal, trending slightly slower.**
+- The win is **capacity**: more combined VRAM keeps a larger context (or a
+  bigger model) on-GPU. That only becomes a *speed* win versus a single card
+  when the context would otherwise **overflow one card and spill to CPU** —
+  then two GPUs (all on-GPU) are dramatically faster than one (spilling).
+- Real tokens/s gains come from **throughput**, not latency: run a separate
+  model instance per GPU to serve concurrent requests. Tensor-parallelism that
+  speeds a single stream needs a fast interconnect (NVLink) we don't have here.
+
+**Scheduling.** Ollama fits a model on the fewest GPUs that hold it, so a model
+that fits one card won't spread by default. Force it with
+`OLLAMA_SCHED_SPREAD=1`; pin a specific card with `CUDA_VISIBLE_DEVICES`.
+Verify with `ollama ps` (`100% GPU`) and `nvidia-smi` (memory on both cards).
+
+**Mismatched cards — bandwidth and arch matter.** Generation is
+memory-bandwidth bound, so the *slower* card gates the layers it holds:
+- **3070 + 3070** (~448 GB/s each): well matched; pooling fine, ~16 GB usable.
+- **3070 + 5060 Ti** (5060 Ti ~448 GB/s GDDR7, Blackwell): also well matched —
+  the 5060 Ti is **not** bottlenecked to the 3070 in any meaningful way, and a
+  **16 GB 5060 Ti alone** likely holds weights + a very large context (no split
+  needed → simplest + fastest). Modern arch → flash-attention / quantized KV
+  work well.
+- **3070 + GTX 1070** (1070 ~256 GB/s, Pascal): poor mix — the 1070 is ~half
+  the bandwidth *and* has crippled FP16, so **flash attention (required for
+  `--kv-cache q8_0/q4_0`) is very slow on it.** Prefer fp16 KV on such a mix,
+  and only lean on the 1070 for spillover VRAM when a large context demands it.
+
+**Implication for `--gpu` auto-sizing.** The current constants
+(`kGpuFitNumCtx = 40960`, q8_0 `65536`) assume a **single 8 GB** card. A future
+enhancement could sum VRAM across visible GPUs, size the context to the pool
+(minus a per-GPU reserve), and **avoid spreading onto a markedly slower/older
+card** (e.g. skip a Pascal device, or weight by bandwidth) unless the user opts
+in. Until then, on a multi-GPU box pass an explicit `--num-ctx` and verify with
+`ollama ps`.
+
 ## Other planned work (backlog)
 
 - **Offline knowledge via Kiwix** — as a future option, query a local
@@ -304,6 +350,9 @@ headroom. fp16 `--gpu` stays at 40960.
   `kiwix-serve` and a chosen ZIM. Fully local, no network required.
 - **AMD/Intel GPU stats** in the status bar (`rocm-smi` / `intel_gpu_top`),
   alongside the existing NVIDIA path.
+- **Multi-GPU-aware `--gpu` sizing** — sum VRAM across visible GPUs and size the
+  context to the pool, skipping markedly slower/older cards by default (see
+  "Multi-GPU notes & tradeoffs").
 - **Optional sandboxing** for `run_command` (container / restricted shell).
 - **Multi-file edits / patch application** as a higher-level tool.
 - **Session save/restore** (persist the conversation transcript).
