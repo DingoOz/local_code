@@ -58,6 +58,10 @@ TuiConsole::TuiConsole(GpuMonitor& gpu, std::string model)
     cbreak();
     noecho();
     keypad(stdscr, TRUE);
+    // Report mouse-wheel events so the conversation can be scrolled with the
+    // wheel (the terminal's own scrollback is unavailable on the alt-screen).
+    mousemask(BUTTON4_PRESSED | BUTTON5_PRESSED, nullptr);
+    mouseinterval(0);
     if (has_colors()) {
         start_color();
         use_default_colors();
@@ -85,11 +89,15 @@ void TuiConsole::layout() {
 
     // Rows: 0 = top border, 1..LINES-3 = output, LINES-2 = status, LINES-1 =
     // bottom border. Columns 0 and COLS-1 are the side borders.
-    int out_h = LINES - 3;
-    if (out_h < 1) out_h = 1;
-    WINDOW* o = newwin(out_h, COLS - 2, 1, 1);
+    //
+    // The output region is an off-screen pad far taller than the screen, so old
+    // lines are retained for scrollback rather than discarded. When it fills,
+    // scrollok lets it roll (dropping the oldest), bounding memory.
+    pad_rows_ = LINES > 2000 ? LINES : 2000;
+    WINDOW* o = newpad(pad_rows_, COLS - 2);
     scrollok(o, TRUE);
     keypad(o, TRUE);
+    view_ = 0;
     WINDOW* st = newwin(1, COLS - 2, LINES - 2, 1);
     if (has_colors()) wbkgd(st, COLOR_PAIR(kStatusPair));
     else wbkgd(st, A_REVERSE);
@@ -98,7 +106,36 @@ void TuiConsole::layout() {
 
     draw_border();
     draw_status();
-    wrefresh(o);
+    follow();
+    show_out();
+    doupdate();
+}
+
+// Visible height of the output pad on screen (rows 1 .. LINES-3).
+int TuiConsole::view_height() const {
+    int h = LINES - 3;
+    return h < 1 ? 1 : h;
+}
+
+// Snap the viewport so the pad's current write position sits at the bottom —
+// i.e. follow live output. Called on every print and on input edits.
+void TuiConsole::follow() {
+    WINDOW* o = static_cast<WINDOW*>(out_);
+    int cy, cx;
+    getyx(o, cy, cx);
+    (void)cx;
+    int top = cy - (view_height() - 1);
+    view_ = top < 0 ? 0 : top;
+}
+
+// Copy the visible slice of the pad (starting at row view_) onto the screen.
+void TuiConsole::show_out() {
+    WINDOW* o = static_cast<WINDOW*>(out_);
+    int smaxrow = LINES - 3;
+    if (smaxrow < 1) smaxrow = 1;
+    int smaxcol = COLS - 2;
+    if (smaxcol < 1) smaxcol = 1;
+    pnoutrefresh(o, view_, 0, 1, 1, smaxrow, smaxcol);
 }
 
 void TuiConsole::draw_border() {
@@ -106,7 +143,7 @@ void TuiConsole::draw_border() {
     std::string title = " local_code — " + model_ + " ";
     if ((int)title.size() > COLS - 4) title = title.substr(0, COLS - 4);
     mvwaddstr(stdscr, 0, 2, title.c_str());
-    std::string hint = " /help  /plan  /build  /quit ";
+    std::string hint = " PgUp/PgDn or wheel: scroll  F2: menu  /help  /quit ";
     if ((int)hint.size() < COLS - 4)
         mvwaddstr(stdscr, LINES - 1, 2, hint.c_str());
     wnoutrefresh(stdscr);
@@ -136,6 +173,22 @@ void TuiConsole::draw_status() {
         char tb[48];
         std::snprintf(tb, sizeof tb, " |  %.1f tok/s ", tps_);
         s += tb;
+    }
+    // When scrolled up, lead with a clear indicator so it's obvious the view is
+    // not at the live bottom (and how to get back).
+    if (out_) {
+        WINDOW* o = static_cast<WINDOW*>(out_);
+        int cy, cx;
+        getyx(o, cy, cx);
+        (void)cx;
+        int bottom = cy - (view_height() - 1);
+        if (bottom < 0) bottom = 0;
+        if (view_ < bottom) {
+            char sb[64];
+            std::snprintf(sb, sizeof sb, " ▲ SCROLLBACK -%d  (End=bottom) | ",
+                          bottom - view_);
+            s = std::string(sb) + s;
+        }
     }
     int w = COLS - 2;
     if ((int)s.size() > w) s = s.substr(0, w);
@@ -220,7 +273,8 @@ void TuiConsole::print(const std::string& text) {
         std::string clean = strip_ansi(text);
         waddstr(o, clean.c_str());
     }
-    wnoutrefresh(o);
+    follow();  // new output snaps the viewport back to the bottom
+    show_out();
     refresh_status_throttled();
     doupdate();
 }
@@ -246,7 +300,24 @@ std::optional<std::string> TuiConsole::input(const std::string& prompt) {
         erase_typed(line.size());
         waddstr(o, repl.c_str());
         line = repl;
-        wnoutrefresh(o);
+        follow();
+        show_out();
+        doupdate();
+    };
+
+    // Scroll the conversation viewport by `delta` rows (>0 = up/back), clamped
+    // to the top and the live bottom.
+    auto scroll_view = [&](int delta) {
+        int cy, cx;
+        getyx(o, cy, cx);
+        (void)cx;
+        int bottom = cy - (view_height() - 1);
+        if (bottom < 0) bottom = 0;
+        view_ -= delta;
+        if (view_ < 0) view_ = 0;
+        if (view_ > bottom) view_ = bottom;
+        show_out();
+        draw_status();  // refresh the SCROLLBACK indicator
         doupdate();
     };
 
@@ -260,9 +331,31 @@ std::optional<std::string> TuiConsole::input(const std::string& prompt) {
         }
         if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
             waddch(o, '\n');
-            wnoutrefresh(o);
+            follow();
+            show_out();
             doupdate();
             break;
+        }
+        if (ch == KEY_F(2) || ch == 7) {  // F2 / Ctrl-G — open the menu
+            line = "/menu";
+            waddch(o, '\n');
+            follow();
+            show_out();
+            doupdate();
+            break;
+        }
+        // Scrollback: Page keys, Shift+Page, mouse wheel, Home/End.
+        if (ch == KEY_PPAGE || ch == KEY_SPREVIOUS) { scroll_view(view_height() - 1); continue; }
+        if (ch == KEY_NPAGE || ch == KEY_SNEXT)     { scroll_view(-(view_height() - 1)); continue; }
+        if (ch == KEY_HOME) { scroll_view(view_); continue; }        // jump to top
+        if (ch == KEY_END)  { scroll_view(-(1 << 20)); continue; }     // jump to bottom
+        if (ch == KEY_MOUSE) {
+            MEVENT me;
+            if (getmouse(&me) == OK) {
+                if (me.bstate & BUTTON4_PRESSED) scroll_view(3);       // wheel up
+                else if (me.bstate & BUTTON5_PRESSED) scroll_view(-3); // wheel down
+            }
+            continue;
         }
         if (ch == KEY_RESIZE) {
             layout();
@@ -281,7 +374,8 @@ std::optional<std::string> TuiConsole::input(const std::string& prompt) {
             if (!line.empty()) {
                 line.pop_back();
                 erase_typed(1);
-                wnoutrefresh(o);
+                follow();
+                show_out();
                 doupdate();
             }
             continue;
@@ -302,7 +396,8 @@ std::optional<std::string> TuiConsole::input(const std::string& prompt) {
         if (ch >= 32 && ch < 127) {
             line.push_back(static_cast<char>(ch));
             waddch(o, ch);
-            wnoutrefresh(o);
+            follow();  // typing snaps back to the bottom if scrolled up
+            show_out();
             doupdate();
         }
     }

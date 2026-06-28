@@ -75,7 +75,8 @@ container (Docker) configured for JSON API access on `127.0.0.1:8888`.
 | `--top-p F` | Nucleus sampling `top_p` (Ornith default `0.95`) |
 | `--top-k N` | Top-k sampling (Ornith default `20`) |
 | `--num-ctx N` | Context window in tokens (Ornith defaults to its native `262144`) |
-| `--gpu` | Start on Ornith with a context (`32768`) sized to stay fully on an 8 GB GPU; implies the Ornith model unless `--model` is given |
+| `--gpu` | Start on Ornith with a context (`40960`) sized to stay fully on an 8 GB GPU; implies the Ornith model unless `--model` is given |
+| `--kv-cache TYPE` | Ollama KV cache type: `q8_0`/`q4_0` packs a larger GPU context (Ornith ~`81920`), `f16` reverts. Reconfigures Ollama via systemd + sudo |
 | `--no-tui` | Disable the ncurses TUI (plain output) |
 | `--searxng URL` | SearXNG base URL (default `http://localhost:8888`) |
 | `--web` | Force-enable web search (skip the probe) |
@@ -129,7 +130,19 @@ of those you didn't set explicitly. The startup banner shows `ctx 262144` and
 `ornith-tuned`. Override any of them with `--temperature/--top-p/--top-k/--no-think`;
 a 256K KV cache is large, so pass a smaller `--num-ctx` (e.g. `16384`) if it
 doesn't fit your VRAM — or use `--gpu`, which selects Ornith and sets a context
-(`32768`) measured to keep the 9B Q4_K_M weights fully on an 8 GB GPU.
+(`40960`) measured to keep the 9B Q4_K_M weights fully on an 8 GB GPU.
+
+> **Bigger window on the same GPU.** `--gpu` caps the *raw* context because the
+> fp16 KV cache is what fills VRAM (~50K tokens is the spill cliff on 8 GB; ~1.3
+> GB is held back by llama.cpp for compute buffers and can't be used for KV). To
+> pack a **much larger** window into the same VRAM, quantize the KV cache with
+> `--kv-cache q8_0` (≈ half the bytes/token → ~80K context) or `q4_0` (more
+> still, at some quality cost). Because the KV cache type is a **server-side**
+> Ollama setting, this reconfigures Ollama via a systemd drop-in
+> (`OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=…`) and restarts the
+> service — it needs **sudo** and affects all Ollama clients. Revert with
+> `--kv-cache f16`. The model picker's `q) ornith-gpu-fit-large` shortcut does
+> the same as `--gpu --kv-cache q8_0`.
 
 **Native vs. text tool-calling.** On every turn the app advertises a real
 `tools[]` schema (the same `read_file` / `list_dir` / `write_file` /

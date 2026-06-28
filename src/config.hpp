@@ -5,12 +5,20 @@
 namespace lc {
 
 // Context window that keeps the 9B Q4_K_M Ornith model (5.6 GB weights) fully
-// resident on an 8 GB GPU. Measured: 32K ctx -> ~6.3 GB (100% GPU); 48K spills
-// to CPU. 32K leaves headroom for the desktop/compositor and compute buffers.
-constexpr int kGpuFitNumCtx = 32768;
+// resident on an 8 GB GPU. Measured on an idle GPU: 40K ctx -> ~6.5 GB and 48K
+// -> ~6.8 GB both stay 100% on the GPU, while 50K spills to the CPU. 40K is the
+// default (vs the ~50K cliff) to leave ~1.6 GB headroom for the desktop /
+// compositor and compute buffers; push it with `--gpu --num-ctx 49152`.
+constexpr int kGpuFitNumCtx = 40960;
 
 // Model selected by --gpu when the user does not pass --model.
 constexpr const char* kGpuFitModel = "ornith:latest";
+
+// GPU-fit context when the Ollama KV cache is quantized (q8_0/q4_0). q8_0 halves
+// the KV bytes/token vs fp16, so roughly double the fp16 window fits the same
+// 8 GB. Conservative default below the estimated ~100K (q8_0) spill cliff;
+// re-measure per the README's procedure if pushing higher.
+constexpr int kGpuFitNumCtxQuant = 81920;  // 80 * 1024
 
 struct Config {
     std::string host = "http://localhost:11434";
@@ -48,6 +56,13 @@ struct Config {
     // fully on the GPU (see kGpuFitNumCtx). Implies the Ornith model unless the
     // user pins --model, and a fitting --num-ctx unless one was given.
     bool fit_gpu = false;
+
+    // --kv-cache TYPE: server-side Ollama KV cache type ("q8_0"/"q4_0" to pack a
+    // larger context into the same VRAM, or "f16" to revert to the default).
+    // Applied at startup via a systemd drop-in + service restart. Empty => leave
+    // the server as-is. A quantized type enlarges the --gpu context (see
+    // kGpuFitNumCtxQuant).
+    std::string kv_cache;
 
     // True once any of the sampling fields was set explicitly on the CLI, so the
     // Ornith auto-tune never clobbers a user's choice.

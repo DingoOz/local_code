@@ -29,6 +29,12 @@ public:
     void set_yolo(bool on) { cfg_.yolo = on; }
     bool yolo() const { return cfg_.yolo; }
 
+    // Enable web search at runtime (e.g. after the menu starts SearXNG). When
+    // turning it on, registers the web_search tool and tells the model about it
+    // by appending the web tool line to the system prompt.
+    void set_web_enabled(bool on);
+    bool web_enabled() const { return cfg_.web_enabled; }
+
 private:
     OllamaClient& client_;
     Conversation& convo_;

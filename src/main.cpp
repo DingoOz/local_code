@@ -1,5 +1,7 @@
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
@@ -76,8 +78,10 @@ void download_model(OllamaClient& client, const std::string& name) {
     std::cout << "\n  Download complete.\n";
 }
 
-// Interactive model picker when --model is not supplied.
-std::string pick_model(OllamaClient& client, const std::string& preset) {
+// Interactive model picker when --model is not supplied. May set cfg.fit_gpu
+// when the user picks the GPU-fit shortcut. Uses cfg.model as the preset.
+std::string pick_model(OllamaClient& client, Config& cfg) {
+    const std::string preset = cfg.model;
     std::vector<std::string> models = client.list_models();
 
     // No models installed: offer to download one (the preset if given, else the
@@ -105,22 +109,181 @@ std::string pick_model(OllamaClient& client, const std::string& preset) {
         return preset;
     }
 
+    // Detect an installed Ornith model to back the shortcut entries; fall back
+    // to the canonical name if none is installed.
+    std::string ornith = kGpuFitModel;
+    for (const auto& m : models) {
+        std::string low = m;
+        for (char& c : low) c = static_cast<char>(std::tolower((unsigned char)c));
+        if (low.find("ornith") != std::string::npos) { ornith = m; break; }
+    }
+
     std::cout << "Available models:\n";
     for (size_t i = 0; i < models.size(); ++i)
         std::cout << "  " << (i + 1) << ") " << models[i] << "\n";
-    std::cout << "(tip: for the strongest native tool-calling, try an Ornith-1 "
-                 "GGUF — reasoning + recommended sampling auto-enable.)\n";
+    std::cout << "Shortcuts:\n"
+                 "  d) default        — Ornith (" << ornith
+              << "), native 256K context\n"
+                 "  g) ornith-gpu-fit — Ornith (" << ornith
+              << "), 40K context to fit an 8 GB GPU\n"
+                 "  q) ornith-gpu-fit-large — Ornith (" << ornith
+              << "), ~80K context via a q8_0 KV cache (reconfigures Ollama, sudo)\n"
+                 "(tip: Ornith auto-enables reasoning + recommended sampling.)\n";
 
     while (true) {
-        std::cout << "Select model [1-" << models.size() << "]: " << std::flush;
+        std::cout << "Select [1-" << models.size() << ", d, g, q]: "
+                  << std::flush;
         std::string line;
         if (!std::getline(std::cin, line)) std::exit(0);
+        size_t b = line.find_first_not_of(" \t");
+        size_t e = line.find_last_not_of(" \t\r\n");
+        std::string sel =
+            b == std::string::npos ? "" : line.substr(b, e - b + 1);
+        if (sel == "d" || sel == "D") { cfg.fit_gpu = false; return ornith; }
+        if (sel == "g" || sel == "G") { cfg.fit_gpu = true;  return ornith; }
+        if (sel == "q" || sel == "Q") {
+            cfg.fit_gpu = true;
+            cfg.kv_cache = "q8_0";
+            return ornith;
+        }
         try {
-            size_t idx = std::stoul(line);
+            size_t idx = std::stoul(sel);
             if (idx >= 1 && idx <= models.size()) return models[idx - 1];
         } catch (...) {
         }
         std::cout << "Invalid choice.\n";
+    }
+}
+
+// Run a shell command, capturing combined stdout+stderr. Returns the exit
+// status (0 == success), or -1 if the command could not be launched.
+int run_capture(const std::string& cmd, std::string& out) {
+    out.clear();
+    FILE* p = popen((cmd + " 2>&1").c_str(), "r");
+    if (!p) return -1;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
+    int rc = pclose(p);
+    return rc == -1 ? -1 : WEXITSTATUS(rc);
+}
+
+// Apply a server-side Ollama KV cache type via a systemd drop-in + service
+// restart (needs sudo). `type` is q8_0/q4_0 to enable a quantized cache, or f16
+// to revert (removes the drop-in). Idempotent: skips the restart when the
+// drop-in already requests `type`. Runs before the TUI so sudo can prompt on the
+// terminal. Returns true on success (or when already applied / nothing to do).
+bool apply_kv_cache_setting(const Config& cfg, const std::string& type) {
+    const std::string conf =
+        "/etc/systemd/system/ollama.service.d/local_code-kv.conf";
+    const bool revert = (type == "f16");
+
+    // Read the current drop-in (world-readable under /etc) to decide if work is
+    // needed.
+    std::string cur;
+    {
+        std::ifstream f(conf);
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        cur = ss.str();
+    }
+    if (revert) {
+        if (cur.empty()) return true;  // nothing to revert
+    } else if (cur.find("OLLAMA_KV_CACHE_TYPE=" + type) != std::string::npos) {
+        std::cout << "Ollama KV cache already set to " << type << ".\n";
+        return true;
+    }
+
+    std::cout << (revert ? "Reverting Ollama to the default fp16 KV cache"
+                         : "Configuring Ollama for a " + type + " KV cache")
+              << " (needs sudo; restarts the Ollama service)...\n";
+    std::string cmd;
+    if (revert) {
+        cmd = "sudo rm -f " + conf +
+              " && sudo systemctl daemon-reload && sudo systemctl restart ollama";
+    } else {
+        cmd =
+            "sudo mkdir -p /etc/systemd/system/ollama.service.d && "
+            "printf '[Service]\\nEnvironment=\"OLLAMA_FLASH_ATTENTION=1\"\\n"
+            "Environment=\"OLLAMA_KV_CACHE_TYPE=" + type + "\"\\n' | "
+            "sudo tee " + conf + " >/dev/null && "
+            "sudo systemctl daemon-reload && sudo systemctl restart ollama";
+    }
+    std::string out;
+    if (run_capture(cmd, out) != 0) {
+        std::cout << "Failed to reconfigure Ollama:\n  " << out
+                  << "(Is it a systemd service? Try: systemctl status ollama)\n";
+        return false;
+    }
+    // Wait for the API to come back after the restart.
+    const std::string probe =
+        "curl -fsS " + cfg.host + "/api/tags -o /dev/null";
+    for (int i = 0; i < 30; ++i) {
+        std::string p;
+        if (run_capture(probe, p) == 0) {
+            std::cout << "Ollama restarted ("
+                      << (revert ? "fp16" : type) << " KV cache).\n";
+            return true;
+        }
+        ::sleep(1);
+    }
+    std::cout << "Ollama did not answer after the restart (check its logs).\n";
+    return false;
+}
+
+// Start the local SearXNG Docker container (the installer names it "searxng")
+// and wait for its JSON API to answer. Streams progress to the console and
+// returns true once reachable.
+bool start_searxng(Console& console, const Config& cfg) {
+    console.print("Starting SearXNG container (docker start searxng)...\n");
+    std::string out;
+    // Try without sudo first, then with — the installer may have used sudo.
+    int rc = run_capture("docker start searxng", out);
+    if (rc != 0) rc = run_capture("sudo docker start searxng", out);
+    if (rc != 0) {
+        console.print("Could not start the SearXNG container:\n  " + out +
+                      "If it doesn't exist yet, run ./install.sh to create it.\n");
+        return false;
+    }
+    console.print("Waiting for the JSON API at " + cfg.searxng_url + " ...\n");
+    for (int i = 0; i < 30; ++i) {
+        if (web_search_available(cfg.searxng_url)) return true;
+        ::sleep(1);
+    }
+    console.print("SearXNG started but its JSON API didn't answer in time.\n"
+                  "Check: docker logs searxng\n");
+    return false;
+}
+
+// Interactive menu opened with /menu. Currently a single action: bring up the
+// local SearXNG web-search server and enable the web_search tool for the agent.
+void run_menu(Console& console, Config& cfg, Agent& agent) {
+    while (true) {
+        const bool web = agent.web_enabled();
+        console.print(std::string("\n== Menu ==\n") +
+                      "  1) Start SearXNG web-search server" +
+                      (web ? "  [enabled]" : "") + "\n" +
+                      "  0) Close menu\n");
+        auto choice = console.input("menu> ");
+        if (!choice) return;  // EOF
+        std::string c = *choice;
+        while (!c.empty() && (c.back() == ' ' || c.back() == '\n')) c.pop_back();
+        if (c.empty() || c == "0" || c == "q") return;
+        if (c == "1") {
+            if (agent.web_enabled()) {
+                console.print("Web search is already enabled.\n");
+                continue;
+            }
+            if (start_searxng(console, cfg)) {
+                cfg.web_enabled = true;
+                agent.set_web_enabled(true);
+                console.print("SearXNG is up — web_search is now enabled.\n");
+            } else {
+                console.print("web_search stays off.\n");
+            }
+            continue;
+        }
+        console.print("Unknown choice: " + c + "\n");
     }
 }
 
@@ -149,6 +312,8 @@ Conversation::Summarizer make_summarizer(OllamaClient& client,
 const char* kHelpText =
     "Commands:\n"
     "  /help    show this help\n"
+    "  /menu    open the menu (start the SearXNG web-search server) — also F2\n"
+    "  (scroll the conversation with PgUp/PgDn, the mouse wheel, or Home/End)\n"
     "  /plan    enter planning mode (design & ask questions, no changes)\n"
     "  /build   enter build mode (can write files / run commands)\n"
     "  /learn   scan the project and write its notes (.local_code/PROJECT.md)\n"
@@ -198,10 +363,24 @@ int main(int argc, char** argv) {
     if (cfg.fit_gpu && cfg.model.empty()) cfg.model = kGpuFitModel;
 
     try {
-        cfg.model = pick_model(client, cfg.model);
+        cfg.model = pick_model(client, cfg);
     } catch (const std::exception& e) {
         std::cerr << "Startup error: " << e.what() << "\n";
         return 1;
+    }
+
+    // Apply a server-side quantized KV cache if requested (before sizing the
+    // context, since success enlarges the GPU-fit window). On failure, fall back
+    // to fp16 so the larger context isn't loaded onto a fp16 cache.
+    if (!cfg.kv_cache.empty()) {
+        const bool ok = apply_kv_cache_setting(cfg, cfg.kv_cache);
+        if (cfg.kv_cache == "f16") {
+            cfg.kv_cache.clear();  // f16 == server default; nothing to flag
+        } else if (!ok) {
+            std::cerr << "Falling back to the fp16 KV cache (smaller GPU "
+                         "context).\n";
+            cfg.kv_cache.clear();
+        }
     }
 
     // Apply model-specific defaults (Ornith-1: thinking + recommended sampling)
@@ -275,6 +454,7 @@ int main(int argc, char** argv) {
                         ? ", ctx " + std::to_string(cfg.num_ctx)
                         : "") +
                    (cfg.fit_gpu ? ", gpu-fit" : "") +
+                   (!cfg.kv_cache.empty() ? ", kv " + cfg.kv_cache : "") +
                    (tuned ? ", ornith-tuned" : "") +
                    "). /help for commands.\n");
 
@@ -293,6 +473,7 @@ int main(int argc, char** argv) {
 
         if (input == "/quit" || input == "/exit") break;
         if (input == "/help") { console->print(kHelpText); continue; }
+        if (input == "/menu") { run_menu(*console, cfg, agent); continue; }
         if (input == "/plan") {
             agent.set_plan_mode(true);
             console->print(

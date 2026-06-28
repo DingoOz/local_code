@@ -50,13 +50,36 @@ The `Console` abstraction is the key extension point: any new input modality
 
 **Goal:** let the user speak a prompt instead of typing it. Press a key in the
 TUI, talk, release/stop, and the transcribed text drops into the input line for
-review and submission. Fully local, consistent with the project's ethos.
+review and submission. Fully local, **CPU-based by default**, consistent with
+the project's ethos.
 
-### Approach: local whisper.cpp
+### Approach: local whisper.cpp (CPU-first)
 
 Use [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — a C/C++ GGML
 implementation of OpenAI Whisper that runs locally on CPU or GPU. It matches
 this project's local-first, C++ design and needs no network or Python.
+
+**Run STT on the CPU, not the GPU.** The 8 GB GPU is already fully committed to
+the LLM — especially in `--gpu` / `--kv-cache` modes, where the weights + KV
+cache leave no spare VRAM. Whisper is small and fast enough on CPU for
+short dictation clips, so keeping it off the GPU avoids contention and VRAM
+pressure entirely. GPU/CUDA transcription stays an opt-in for machines with
+headroom, never the default.
+
+- **CPU model choice:** prefer the small English models — `base.en` (good
+  accuracy, ~1.5× realtime on a few cores) or `tiny.en` (fastest, lower
+  accuracy). Use the **quantized** GGML builds (e.g. `ggml-base.en-q5_1.bin`)
+  to cut RAM and speed up CPU inference further.
+- **Threads:** pass `whisper-cli -t <N>` (e.g. number of physical cores) so a
+  short clip transcribes in well under its own duration.
+- A multi-second dictation typically transcribes in ~1 s on a modern CPU — fast
+  enough that the "transcribing…" status is barely visible.
+
+**Lightweight CPU-only alternative (fallback):** if whisper.cpp is unavailable,
+[Vosk](https://alphacephei.com/vosk/) offers a small, fully offline, CPU-only
+streaming recognizer with a tiny (~50 MB) English model. Lower accuracy than
+Whisper but trivial to run on any CPU; worth keeping as an optional backend
+behind the same `dictate()` seam.
 
 Two integration options, in order of preference:
 
@@ -124,9 +147,13 @@ by a TUI hotkey so the UI stays responsive.
 
 ### Dependencies
 
-- `whisper.cpp` (`whisper-cli` binary + a GGML model such as `base.en`).
+- `whisper.cpp` (`whisper-cli` binary + a small GGML model such as a quantized
+  `base.en`), built CPU-only — no CUDA required.
 - An audio capture tool (`arecord`/ALSA, or `ffmpeg`).
-- A microphone. On the GPU box, whisper.cpp can use CUDA for fast transcription.
+- A microphone. CUDA transcription is optional and off by default, since the GPU
+  is reserved for the LLM; CPU handles short dictation clips comfortably.
+- Optional fallback backend: Vosk (small CPU-only model) for machines without
+  whisper.cpp.
 
 ### Risks & mitigations
 
@@ -174,6 +201,96 @@ JSON API. The app then auto-detects it on next launch.
 
 ### Status: implemented (tool + client + installer); see `src/web_search.*`.
 
+## Auto-compaction (context nearly full)
+
+**Goal:** when the conversation is about to overflow the context window,
+**automatically** summarize and shrink it — so a long session never gets
+truncated mid-thought or silently drops important earlier turns. This extends
+the manual `/compact` (feature #7) into a proactive safety net for weak models
+with small windows.
+
+### Approach
+
+- A single high-water mark drives it: the same context-usage estimate already
+  surfaced as `ctx NN%` via `Console::set_ctx` (window token estimate ÷ budget).
+- Before each model call in `Agent::handle`, check usage. When it crosses a
+  threshold (default **85%**), call `Conversation::compact()` — fold the older
+  turns into the running summary — *before* sending the request, so the turn
+  goes out within budget instead of triggering a hard eviction.
+- Compact the **oldest** turns first and keep the most recent N intact, so the
+  immediate working context (current file, last tool result) is preserved.
+- Surface it unobtrusively: a one-line notice ("Context 85% full — compacted
+  earlier turns.") and the status bar's `ctx%` drops, so the user sees what
+  happened. Never auto-compacts the system prompt or the active turn.
+
+### Configuration / flags
+
+- `--compact-at PCT` — high-water mark (default `85`; `0`/`100` disables auto).
+- `--no-auto-compact` — keep only manual `/compact`.
+- Hysteresis: after compacting, require usage to fall and re-cross the mark
+  before compacting again, so it can't thrash on a single oversized turn.
+
+### Integration points
+
+- `Conversation` already owns `compact()` and the token estimate; add a small
+  `usage_pct()` / `should_compact()` helper and an "auto" policy field.
+- `Agent::handle` calls it at the top of the loop (and again before re-querying
+  after a tool result, since tool output can be large).
+- Reuses the existing summarizer (`make_summarizer` in `main.cpp`); on a
+  summarizer failure it falls back to plain oldest-turn eviction, as today.
+
+### Status: planned. `Conversation::compact()` and the `ctx%` estimate exist;
+this adds the automatic trigger, threshold flags, and hysteresis.
+
+## KV-cache quantization (larger GPU context, later)
+
+**Goal:** fit a **much larger** context window into the same VRAM, so `--gpu`
+mode (and small-VRAM users generally) can run long contexts without spilling to
+CPU. Captured here as a future option, not yet wired in.
+
+### Why
+
+`--gpu` currently caps the raw context at **40960** tokens (≈6.5 GB on an 8 GB
+card; ~50K is the measured spill cliff). The limit is the **fp16 KV cache** —
+its bytes/token are what fill VRAM as the window grows. A further ~1.3 GB is
+reserved by llama.cpp for compute/activation buffers and a fit-safety margin and
+**cannot** be reclaimed for KV; pushing past the cliff makes Ollama offload whole
+layers to CPU (slower), not pack more context. So a bigger raw `--num-ctx` is not
+the lever — **smaller KV bytes/token** is.
+
+### Approach
+
+- Quantize the KV cache instead of keeping it fp16. With flash attention on,
+  Ollama exposes this server-side:
+  - `OLLAMA_FLASH_ATTENTION=1`
+  - `OLLAMA_KV_CACHE_TYPE=q8_0` (≈½ the bytes/token → ~80K+ tokens in the same
+    VRAM) or `q4_0` (≈¼ → larger still, at some quality cost).
+- These are **environment settings on the Ollama server**, not per-request
+  `options`, so the app can't set them on the existing `/api/chat` call. Likely
+  shapes:
+  1. **Document + detect** (simplest): README/`--help` note; on startup, if the
+     KV type is observable, surface it in the banner (e.g. `kv q8_0`).
+  2. **Managed server**: if `local_code` ever launches/manages its own Ollama
+     instance, export the env vars there and bump the `--gpu` context to match.
+  3. **Profiles**: a `--gpu-ctx large` style flag that assumes a quantized KV
+     server and selects a bigger `kGpuFitNumCtx` (e.g. 81920) accordingly.
+
+### Risks / notes
+
+- Quantized KV trades a little accuracy for capacity; keep fp16 the default and
+  make quantization opt-in.
+- Exact token ceilings depend on the model's head/layer dims — re-measure per
+  model (as done for the fp16 numbers), don't assume the ×2 / ×4 scaling is
+  exact.
+- Requires flash attention support for the model/quant combo; fall back to fp16
+  if unavailable.
+
+### Status: implemented. `--kv-cache q8_0|q4_0|f16` (and the picker's
+`q) ornith-gpu-fit-large` shortcut) applies the type via a systemd drop-in +
+service restart (sudo, idempotent), and a quantized cache enlarges the GPU-fit
+context to `kGpuFitNumCtxQuant = 81920`. The 80K figure is an estimate — verify
+and tune per the measurement procedure; fp16 `--gpu` stays at 40960.
+
 ## Other planned work (backlog)
 
 - **Offline knowledge via Kiwix** — as a future option, query a local
@@ -198,7 +315,8 @@ JSON API. The app then auto-detects it on next launch.
 3. ✅ ncurses TUI with GPU status bar and category colors.
 4. ✅ Web search via local SearXNG (`web_search` tool + installer).
 5. ⏭ **Whisper STT voice input** (this document).
-6. ⏳ Broader GPU vendor support + session persistence.
+6. ⏳ Auto-compaction when the context window is nearly full.
+7. ⏳ Broader GPU vendor support + session persistence.
 
 ---
 

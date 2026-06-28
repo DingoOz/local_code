@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "stream_filter.hpp"
+#include "system_prompt.hpp"
 #include "tools.hpp"
 
 namespace lc {
@@ -54,6 +55,20 @@ Agent::Agent(OllamaClient& client, Conversation& convo, Config cfg,
 void Agent::set_plan_mode(bool plan) {
     cfg_.plan_mode = plan;
     convo_.set_system_prompt(plan ? plan_prompt_ : build_prompt_);
+}
+
+void Agent::set_web_enabled(bool on) {
+    if (on == cfg_.web_enabled) return;  // no change
+    cfg_.web_enabled = on;
+    if (on) {
+        // Web was off at startup, so the web tool line isn't in the prompts yet;
+        // append it (to both modes) and refresh the live system prompt so the
+        // model is told the web_search tool now exists.
+        const std::string line = std::string("\n") + kWebToolLine;
+        build_prompt_ += line;
+        plan_prompt_ += line;
+        convo_.set_system_prompt(cfg_.plan_mode ? plan_prompt_ : build_prompt_);
+    }
 }
 
 void Agent::handle(const std::string& user_input) {

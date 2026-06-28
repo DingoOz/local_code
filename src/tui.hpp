@@ -12,7 +12,9 @@ class GpuMonitor;
 
 // ncurses console: a bordered screen with a scrolling output region, inline
 // line input (with history), and a bottom status bar showing live GPU stats.
-// Only safe to construct when stdin/stdout are a real terminal.
+// The output region is an off-screen pad that retains the recent conversation,
+// so the user can scroll back through it with PageUp/PageDown. Only safe to
+// construct when stdin/stdout are a real terminal.
 class TuiConsole : public Console {
 public:
     TuiConsole(GpuMonitor& gpu, std::string model);
@@ -32,11 +34,16 @@ private:
     void refresh_status_throttled();
     void render_ansi(const std::string& text);  // translate ANSI SGR -> ncurses
     void apply_attr();                           // push cur_pair_/cur_bold_
+    int view_height() const;  // visible rows of the output pad
+    void follow();            // snap the viewport to the latest output (bottom)
+    void show_out();          // push the visible pad region to the screen
 
     GpuMonitor& gpu_;
     std::string model_;
-    void* out_ = nullptr;     // WINDOW* — scrolling output + input
+    void* out_ = nullptr;     // WINDOW* — output pad (scrollback) + input echo
     void* status_ = nullptr;  // WINDOW* — bottom GPU bar
+    int pad_rows_ = 0;        // height of the output pad (scrollback depth)
+    int view_ = 0;            // top pad row currently shown (for scrollback)
     std::vector<std::string> history_;
     std::string history_path_;
     std::chrono::steady_clock::time_point last_status_{};

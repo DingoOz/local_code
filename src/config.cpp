@@ -24,7 +24,9 @@ void Config::print_usage(const char* argv0) {
         "  --top-k N        Top-k sampling (Ornith default 20)\n"
         "  --num-ctx N      Context window size in tokens (e.g. 8192)\n"
         "  --gpu            Start on Ornith with a context sized to fit an 8 GB\n"
-        "                   GPU (32K ctx; implies the Ornith model)\n"
+        "                   GPU (40K ctx; implies the Ornith model)\n"
+        "  --kv-cache TYPE  Ollama KV cache type: q8_0 / q4_0 (larger GPU context)\n"
+        "                   or f16 (default). Reconfigures Ollama via sudo.\n"
         "  --no-tui         Disable the ncurses TUI (plain output)\n"
         "  --searxng URL    SearXNG base URL (default http://localhost:8888)\n"
         "  --web            Force-enable web search (skip the probe)\n"
@@ -94,6 +96,14 @@ bool Config::parse(int argc, char** argv, Config& out, bool& exit_now) {
             if (out.num_ctx < 0) { std::cerr << "--num-ctx must be >= 0\n"; return false; }
         } else if (!std::strcmp(a, "--gpu")) {
             out.fit_gpu = true;
+        } else if (!std::strcmp(a, "--kv-cache")) {
+            const char* v = need_value(i); if (!v) return false;
+            out.kv_cache = v;
+            if (out.kv_cache != "f16" && out.kv_cache != "q8_0" &&
+                out.kv_cache != "q4_0") {
+                std::cerr << "--kv-cache must be one of: f16, q8_0, q4_0\n";
+                return false;
+            }
         } else if (!std::strcmp(a, "--no-tui")) {
             out.no_tui = true;
         } else if (!std::strcmp(a, "--searxng")) {
@@ -135,10 +145,16 @@ bool Config::apply_model_defaults() {
         applied = true;
     }
     // Context window, when --num-ctx was not given. With --gpu, size it to keep
-    // the model fully on an 8 GB GPU; otherwise use Ornith-1's native 256K
-    // window (a large KV cache — pass --num-ctx or --gpu if it won't fit VRAM).
+    // the model fully on an 8 GB GPU — larger when the KV cache is quantized;
+    // otherwise use Ornith-1's native 256K window (a large KV cache — pass
+    // --num-ctx or --gpu if it won't fit VRAM).
     if (num_ctx == 0) {
-        num_ctx = fit_gpu ? kGpuFitNumCtx : 262144;  // 256 * 1024
+        if (fit_gpu) {
+            const bool quant = (kv_cache == "q8_0" || kv_cache == "q4_0");
+            num_ctx = quant ? kGpuFitNumCtxQuant : kGpuFitNumCtx;
+        } else {
+            num_ctx = 262144;  // 256 * 1024
+        }
         applied = true;
     }
     return applied;
