@@ -4,6 +4,8 @@
 #include "conversation.hpp"
 #include "io.hpp"
 #include "ollama_client.hpp"
+#include "permissions.hpp"
+#include "undo.hpp"
 
 namespace lc {
 
@@ -13,7 +15,8 @@ namespace lc {
 class Agent {
 public:
     Agent(OllamaClient& client, Conversation& convo, Config cfg,
-          std::string build_prompt, std::string plan_prompt, Console& console);
+          std::string build_prompt, std::string plan_prompt, Console& console,
+          PermissionStore& perms, UndoStack& undo);
 
     // Handles a single user message end-to-end. Streams output to stdout.
     void handle(const std::string& user_input);
@@ -22,6 +25,10 @@ public:
     void set_plan_mode(bool plan);
     bool plan_mode() const { return cfg_.plan_mode; }
 
+    // Runtime auto-accept toggle (/yolo): skip confirmations until turned off.
+    void set_yolo(bool on) { cfg_.yolo = on; }
+    bool yolo() const { return cfg_.yolo; }
+
 private:
     OllamaClient& client_;
     Conversation& convo_;
@@ -29,6 +36,8 @@ private:
     std::string build_prompt_;
     std::string plan_prompt_;
     Console& console_;
+    PermissionStore& perms_;
+    UndoStack& undo_;
 };
 
 }  // namespace lc

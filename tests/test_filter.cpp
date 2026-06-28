@@ -34,6 +34,22 @@ int main() {
     out += f.flush();
     assert(out == "AB");
 
+    // A multi-byte UTF-8 character ("—" = E2 80 94) split across chunks must be
+    // reassembled, never emitted in partial pieces (which corrupts terminals).
+    assert(stream("No problem \xE2\x80\x94 done") == "No problem \xE2\x80\x94 done");
+    {
+        MarkerFilter g;
+        std::string r = g.feed("ab\xE2\x80");  // ends mid-character: hold the tail
+        assert(r == "ab");                       // partial bytes withheld
+        r += g.feed("\x94" "cd");               // completes "—"
+        r += g.flush();
+        assert(r == "ab\xE2\x80\x94" "cd");
+    }
+    // The helper itself: count of incomplete trailing bytes.
+    assert(utf8_incomplete_suffix_len("ab\xE2\x80", 4) == 2);  // 2 of 3 bytes
+    assert(utf8_incomplete_suffix_len("ab\xE2\x80\x94", 5) == 0);  // complete
+    assert(utf8_incomplete_suffix_len("plain", 5) == 0);
+
     std::cout << "FILTER TESTS PASS\n";
     return 0;
 }

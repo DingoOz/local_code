@@ -199,3 +199,64 @@ JSON API. The app then auto-detects it on next launch.
 4. ✅ Web search via local SearXNG (`web_search` tool + installer).
 5. ⏭ **Whisper STT voice input** (this document).
 6. ⏳ Broader GPU vendor support + session persistence.
+
+---
+
+## Claude Code-inspired feature additions
+
+Eight features adapted from Claude Code, chosen to fit the weak-local-model,
+compact, no-sandbox ethos. All driven through the existing tool schema (native
+`tool_calls` + text-protocol fallback) and `Console` abstraction.
+
+### 1. `edit_file` — targeted string replacement
+A new tool `edit_file {path, old_string, new_string}`: read the file, require
+`old_string` to occur **exactly once** (else error asking for more context),
+replace it, preview a diff, confirm, write. Far cheaper and safer than
+`write_file` rewriting a whole file — the prime cause of weak-model truncation.
+Reuses the native/text tool plumbing; advertised alongside `write_file`, hidden
+in planning mode.
+
+### 2. Persistent permission allowlist (`y` / `N` / `a`)
+`Console::confirm` returns `Confirm{No, Once, Always}`. Choosing **a**(lways)
+records a rule in `PermissionStore` (persisted to `.local_code/permissions`) so
+matching actions skip the prompt next time. Rules: commands by first token
+(`cmd:git`), file writes coarse (`write`), notes (`remember`). Cuts friction
+without abandoning the safety model.
+
+### 3. Backup / undo checkpoints
+Before every `write_file` / `edit_file`, `UndoStack` snapshots the file to
+`.local_code/backups/`. `/undo` restores the most recent snapshot (or deletes a
+newly created file). Cheap safety net given there is no sandbox.
+
+### 4. Search tools — `find_files` / `search_code`
+`find_files {pattern}` (glob via `fnmatch`) and `search_code {pattern, path?}`
+(regex with substring fallback, `path:line: text`, capped). Read-only, available
+in planning mode. Lets weak models locate code without guessing shell syntax.
+
+### 5. Diff preview on write
+A shared `preview_diff(old, new)` (common prefix/suffix trim + colored `-`/`+`
+lines, capped) replaces the full-file dump shown before `write_file`, and powers
+the `edit_file` preview.
+
+### 6. Custom slash commands
+At startup, scan `<root>/.local_code/commands/*.md`; each `foo.md` becomes
+`/foo`, its body sent to the agent (with `$ARGS` replaced by trailing text).
+User-defined reusable prompts, no rebuild needed.
+
+### 7. Context-usage indicator + `/compact`
+Status bar shows `ctx NN%` (window token estimate ÷ budget) via
+`Console::set_ctx`. `/compact` forces `Conversation::compact()` — summarize all
+turns now and clear them — instead of waiting for automatic eviction.
+
+### 8. Runtime auto-accept toggle
+`/yolo` flips `cfg.yolo` mid-session (the prompt/banner reflects it), so a user
+can grant a hands-off stretch without restarting.
+
+### New / changed files
+- New: `src/diff.hpp`, `src/permissions.{hpp,cpp}`, `src/undo.{hpp,cpp}`.
+- Tools: `src/tools.{hpp,cpp}` (ToolCtx, edit_file, search tools, allowlist/undo
+  wiring, schema), `src/system_prompt.hpp`.
+- IO: `src/io.hpp` (Confirm enum, set_ctx), `src/tui.*`, `src/plain_console.*`.
+- Core: `src/conversation.*` (compact), `src/agent.*` (ToolCtx, ctx%),
+  `src/main.cpp` (commands, /undo, /compact, /yolo), `CMakeLists.txt`.
+- Tests: `tests/test_features.cpp` (diff, glob, permissions, edit mapping).

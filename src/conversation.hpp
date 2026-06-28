@@ -22,7 +22,13 @@ public:
     void set_summarizer(Summarizer fn) { summarize_ = std::move(fn); }
 
     void add(Role role, std::string content);
+    void add(Message msg);  // add with native tool-call fields preserved
     void reset();  // clears transcript + summary, keeps system prompt
+
+    // Force-summarize all current turns into the rolling summary and drop them
+    // (the manual /compact command). No-op if there is nothing to compact.
+    // Returns the number of turns folded away.
+    size_t compact();
 
     // Swap the system prompt (e.g. when toggling planning/build mode). History
     // is preserved; the new prompt applies to the next window().

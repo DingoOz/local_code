@@ -10,7 +10,8 @@ class PlainConsole : public Console {
 public:
     void print(const std::string& text) override;
     std::optional<std::string> input(const std::string& prompt) override;
-    bool confirm(const std::string& prompt) override;
+    Confirm confirm(const std::string& prompt,
+                    bool allow_always = false) override;
 };
 
 }  // namespace lc

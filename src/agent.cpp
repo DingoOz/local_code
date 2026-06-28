@@ -1,5 +1,7 @@
 #include "agent.hpp"
 
+#include <chrono>
+
 #include "stream_filter.hpp"
 #include "tools.hpp"
 
@@ -39,13 +41,15 @@ void show_result(const ToolCall& call, const ToolResult& res, Console& con) {
 
 Agent::Agent(OllamaClient& client, Conversation& convo, Config cfg,
              std::string build_prompt, std::string plan_prompt,
-             Console& console)
+             Console& console, PermissionStore& perms, UndoStack& undo)
     : client_(client),
       convo_(convo),
       cfg_(std::move(cfg)),
       build_prompt_(std::move(build_prompt)),
       plan_prompt_(std::move(plan_prompt)),
-      console_(console) {}
+      console_(console),
+      perms_(perms),
+      undo_(undo) {}
 
 void Agent::set_plan_mode(bool plan) {
     cfg_.plan_mode = plan;
@@ -55,21 +59,77 @@ void Agent::set_plan_mode(bool plan) {
 void Agent::handle(const std::string& user_input) {
     convo_.add(Role::User, user_input);
 
-    std::string last_sig;   // detect a model stuck repeating one tool call
+    ToolCtx tctx{cfg_, console_, perms_, undo_};
+    std::string last_sig;   // detect a model stuck repeating tool call(s)
     int empty_retries = 0;  // some local models emit a blank turn mid-task
     for (int turn = 0; turn < cfg_.max_tool_turns; ++turn) {
         std::vector<Message> window = convo_.window();
 
+        // Context-window usage for the status bar (estimate vs. history budget).
+        int used = 0;
+        for (const auto& m : window)
+            used += Conversation::estimate_tokens(m.content) + 4;
+        double pct = cfg_.budget_tokens > 0
+                         ? 100.0 * used / cfg_.budget_tokens
+                         : 0.0;
+        console_.set_ctx(pct > 100.0 ? 100.0 : pct);
+
         console_.print("\n\033[36m" + cfg_.model + ":\033[0m ");
 
-        // Strip leaked special-token markers as the reply streams; keep the
-        // cleaned text for history + tool parsing.
+        // Strip leaked special-token markers from the visible answer as it
+        // streams. Reasoning (thinking) is shown dimmed and never persisted to
+        // history — only `reply` (cleaned content) is.
         MarkerFilter filter;
         std::string reply;
-        // Stop generating as soon as a complete tool call has arrived — some
-        // models ramble (or emit garbage) after the tool block. write_file is
-        // the exception: wait for its ```file content fence to close.
-        auto stop_when = [](const std::string& full) -> bool {
+        bool in_reasoning = false;
+        std::string reason_buf;  // holds an incomplete trailing UTF-8 char
+        auto flush_reason = [&]() {
+            if (!reason_buf.empty()) { console_.print(reason_buf); reason_buf.clear(); }
+        };
+        auto end_reasoning = [&]() {
+            if (in_reasoning) { flush_reason(); console_.print("\033[0m"); in_reasoning = false; }
+        };
+        // Live tokens/sec for the status bar: time from the first streamed
+        // token (excludes prompt-eval latency) over the count of deltas, which
+        // for Ollama's /api/chat stream is ~one token each.
+        bool gen_started = false;
+        std::chrono::steady_clock::time_point gen_t0;
+        long gen_tokens = 0;
+        auto on_token = [&](const std::string& piece, bool reasoning) {
+            if (!gen_started) {
+                gen_started = true;
+                gen_t0 = std::chrono::steady_clock::now();
+            }
+            ++gen_tokens;
+            double el = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - gen_t0)
+                            .count();
+            if (el > 0.05) console_.set_tps(gen_tokens / el);
+            if (reasoning) {
+                if (!in_reasoning) { console_.print("\033[90m"); in_reasoning = true; }
+                reason_buf += piece;
+                size_t hold = utf8_incomplete_suffix_len(reason_buf, reason_buf.size());
+                console_.print(reason_buf.substr(0, reason_buf.size() - hold));
+                reason_buf.erase(0, reason_buf.size() - hold);
+                return;
+            }
+            end_reasoning();
+            std::string vis = filter.feed(piece);
+            console_.print(vis);
+            reply += vis;
+        };
+
+        ChatOptions opts;
+        opts.think = cfg_.think;
+        opts.tools_json = tool_schemas_json(cfg_);  // mode-aware schema
+        opts.temperature = cfg_.temperature;
+        opts.top_p = cfg_.top_p;
+        opts.top_k = cfg_.top_k;
+        opts.num_ctx = cfg_.num_ctx;
+        // Early-stop for the TEXT-PROTOCOL fallback: stop once a complete tool
+        // block has arrived (native tool_calls terminate the stream on their
+        // own). write_file/remember wait for their ```file fence to close.
+        opts.stop_when = [](const std::string& full) -> bool {
             if (full.find('{') == std::string::npos) return false;
             auto c = parse_tool_call(full);
             if (!c) return false;
@@ -77,26 +137,63 @@ void Agent::handle(const std::string& user_input) {
             if (c->name == "remember" && c->notes.empty()) return false;
             return true;
         };
+
+        ChatResult result;
         try {
-            client_.chat(cfg_.model, window,
-                         [&](const std::string& piece) {
-                             std::string vis = filter.feed(piece);
-                             console_.print(vis);
-                             reply += vis;
-                         },
-                         cfg_.think, stop_when);
+            result = client_.chat(cfg_.model, window, on_token, opts);
         } catch (const std::exception& e) {
+            end_reasoning();
             console_.print(std::string("\n\033[31m[error] ") + e.what() +
                            "\033[0m\n");
             return;
         }
+        end_reasoning();
         std::string tail = filter.flush();
         console_.print(tail + "\n");
         reply += tail;
 
-        // Some local models emit a blank turn (whitespace, or just a stray
-        // "```" fence) mid-task instead of continuing. Nudge them a couple of
-        // times rather than silently handing control back.
+        // ---- Native function-calling path (Ornith and other tool-trained
+        // models). Prefer it whenever structured tool_calls are present. ----
+        if (!result.tool_calls.empty()) {
+            empty_retries = 0;
+            Message am{Role::Assistant, reply, result.raw_tool_calls_json, {}};
+            convo_.add(std::move(am));
+
+            // Stuck-loop guard over the whole batch of calls this turn.
+            std::string sig;
+            for (const auto& n : result.tool_calls)
+                sig += n.name + "\n" + n.arguments_json + "\n";
+            if (sig == last_sig) {
+                console_.print(
+                    "\033[33m[the model repeated the same tool call(s) without "
+                    "making progress — stopping. Tell it how to proceed.]\033[0m\n");
+                return;
+            }
+            last_sig = sig;
+
+            for (const auto& n : result.tool_calls) {
+                console_.print("\033[33m[tool] " + n.name + "\033[0m\n");
+                auto call = tool_call_from_args(n.name, n.arguments_json);
+                ToolResult res;
+                if (!call) {
+                    res = {false, "Error: unknown tool '" + n.name + "'."};
+                    console_.print("\033[90mfailed\033[0m\n");
+                } else {
+                    res = execute_tool(*call, tctx);
+                    show_result(*call, res, console_);
+                }
+                Message tm{Role::Tool, "[" + n.name + " result]\n" + res.output,
+                           {}, n.name};
+                convo_.add(std::move(tm));
+            }
+            continue;
+        }
+
+        // ---- Text-protocol fallback path (weak models that emit a ```tool
+        // block instead of a native call). ----
+        // Some local models emit a blank turn (whitespace, or a stray "```"
+        // fence) mid-task. Nudge them a couple of times rather than silently
+        // handing control back.
         if (reply.find_first_not_of(" \t\r\n`") == std::string::npos) {
             if (++empty_retries > 2) {
                 console_.print(
@@ -125,7 +222,7 @@ void Agent::handle(const std::string& user_input) {
         last_sig = sig;
 
         console_.print("\033[33m[tool] " + call->name + "\033[0m\n");
-        ToolResult res = execute_tool(*call, cfg_, console_);
+        ToolResult res = execute_tool(*call, tctx);
         show_result(*call, res, console_);
 
         // Feed the observation back as a tool message and continue the loop.

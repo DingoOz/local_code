@@ -62,7 +62,9 @@ setup_model() {
   fi
   echo
   say "Recommended model: ${RECOMMENDED_MODEL} (~4.7 GB, clean tool-calling)."
-  if ask_yes "Pull it now with Ollama?"; then
+  say "For the strongest native tool-calling, import an Ornith-1 GGUF and run"
+  say "  with --model <ornith-tag> (reasoning + tuned sampling auto-enable)."
+  if ask_yes "Pull ${RECOMMENDED_MODEL} now with Ollama?"; then
     ollama pull "${RECOMMENDED_MODEL}"
   else
     say "Skipping. Pull later with: ollama pull ${RECOMMENDED_MODEL}"

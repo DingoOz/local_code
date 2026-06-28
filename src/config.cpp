@@ -1,5 +1,6 @@
 #include "config.hpp"
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -17,6 +18,13 @@ void Config::print_usage(const char* argv0) {
         "  --yolo           Auto-execute tools without y/N confirmation\n"
         "  --plan           Start in planning mode (no writes/commands)\n"
         "  --think          Enable model thinking (off by default)\n"
+        "  --no-think       Disable model thinking (overrides auto-enable)\n"
+        "  --temperature F  Sampling temperature (Ornith default 0.6)\n"
+        "  --top-p F        Nucleus sampling top_p (Ornith default 0.95)\n"
+        "  --top-k N        Top-k sampling (Ornith default 20)\n"
+        "  --num-ctx N      Context window size in tokens (e.g. 8192)\n"
+        "  --gpu            Start on Ornith with a context sized to fit an 8 GB\n"
+        "                   GPU (32K ctx; implies the Ornith model)\n"
         "  --no-tui         Disable the ncurses TUI (plain output)\n"
         "  --searxng URL    SearXNG base URL (default http://localhost:8888)\n"
         "  --web            Force-enable web search (skip the probe)\n"
@@ -64,6 +72,28 @@ bool Config::parse(int argc, char** argv, Config& out, bool& exit_now) {
             out.plan_mode = true;
         } else if (!std::strcmp(a, "--think")) {
             out.think = true;
+            out.think_set = true;
+        } else if (!std::strcmp(a, "--no-think")) {
+            out.think = false;
+            out.think_set = true;
+        } else if (!std::strcmp(a, "--temperature")) {
+            const char* v = need_value(i); if (!v) return false;
+            out.temperature = std::atof(v);
+            out.sampling_set = true;
+        } else if (!std::strcmp(a, "--top-p")) {
+            const char* v = need_value(i); if (!v) return false;
+            out.top_p = std::atof(v);
+            out.sampling_set = true;
+        } else if (!std::strcmp(a, "--top-k")) {
+            const char* v = need_value(i); if (!v) return false;
+            out.top_k = std::atoi(v);
+            out.sampling_set = true;
+        } else if (!std::strcmp(a, "--num-ctx")) {
+            const char* v = need_value(i); if (!v) return false;
+            out.num_ctx = std::atoi(v);
+            if (out.num_ctx < 0) { std::cerr << "--num-ctx must be >= 0\n"; return false; }
+        } else if (!std::strcmp(a, "--gpu")) {
+            out.fit_gpu = true;
         } else if (!std::strcmp(a, "--no-tui")) {
             out.no_tui = true;
         } else if (!std::strcmp(a, "--searxng")) {
@@ -85,6 +115,33 @@ bool Config::parse(int argc, char** argv, Config& out, bool& exit_now) {
         }
     }
     return true;
+}
+
+bool Config::apply_model_defaults() {
+    // Case-insensitive substring match on the model name.
+    std::string lower = model;
+    for (char& c : lower) c = static_cast<char>(std::tolower((unsigned char)c));
+    const bool is_ornith = lower.find("ornith") != std::string::npos;
+    if (!is_ornith) return false;
+
+    bool applied = false;
+    // Ornith-1 is a reasoning model: enable thinking unless the user pinned it.
+    if (!think_set && !think) { think = true; applied = true; }
+    // Recommended sampling, only if the user passed no sampling flags at all.
+    if (!sampling_set) {
+        temperature = 0.6;
+        top_p = 0.95;
+        top_k = 20;
+        applied = true;
+    }
+    // Context window, when --num-ctx was not given. With --gpu, size it to keep
+    // the model fully on an 8 GB GPU; otherwise use Ornith-1's native 256K
+    // window (a large KV cache — pass --num-ctx or --gpu if it won't fit VRAM).
+    if (num_ctx == 0) {
+        num_ctx = fit_gpu ? kGpuFitNumCtx : 262144;  // 256 * 1024
+        applied = true;
+    }
+    return applied;
 }
 
 }  // namespace lc

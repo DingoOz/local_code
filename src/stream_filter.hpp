@@ -6,6 +6,28 @@
 
 namespace lc {
 
+// Number of trailing bytes of s[0,len) that form an INCOMPLETE UTF-8 sequence
+// (0 if it ends on a character boundary). Streamed model output can split a
+// multi-byte character across chunks; emitting the leading bytes alone corrupts
+// terminals — ncurses especially — that decode each write independently
+// (e.g. "—" -> "\xEF\xBF\xBD~@~T"). Hold the partial tail until it completes.
+inline size_t utf8_incomplete_suffix_len(const std::string& s, size_t len) {
+    size_t cont = 0;
+    for (size_t i = len; i > 0 && cont < 4; --i) {
+        unsigned char c = static_cast<unsigned char>(s[i - 1]);
+        if ((c & 0xC0) == 0x80) { ++cont; continue; }  // continuation byte
+        size_t need;
+        if      ((c & 0x80) == 0x00) need = 1;         // ASCII
+        else if ((c & 0xE0) == 0xC0) need = 2;
+        else if ((c & 0xF0) == 0xE0) need = 3;
+        else if ((c & 0xF8) == 0xF0) need = 4;
+        else return 0;                  // invalid lead byte: don't hold
+        size_t have = cont + 1;         // lead + continuations seen so far
+        return have < need ? have : 0;  // hold only an unfinished sequence
+    }
+    return 0;  // ran past the start / malformed run: don't hold
+}
+
 // Cleans the harmony-style control tokens some local models leak into their
 // output. Two behaviours:
 //   * "channel headers" — text from an open marker (e.g. "<|channel>") up to a
@@ -33,6 +55,9 @@ public:
                     continue;
                 }
                 size_t hold = holdback(kOpen, holdback(kStrip, holdback(kClose, 0)));
+                // Also hold back an incomplete trailing UTF-8 character so a
+                // multi-byte glyph is never split across writes.
+                hold += utf8_incomplete_suffix_len(pending_, pending_.size() - hold);
                 out.append(pending_, 0, pending_.size() - hold);
                 pending_.erase(0, pending_.size() - hold);
                 break;

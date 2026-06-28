@@ -1,9 +1,12 @@
 #include <unistd.h>
 
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -15,11 +18,15 @@
 #include "gpu_monitor.hpp"
 #include "io.hpp"
 #include "ollama_client.hpp"
+#include "permissions.hpp"
 #include "plain_console.hpp"
 #include "project.hpp"
 #include "system_prompt.hpp"
 #include "tui.hpp"
+#include "undo.hpp"
 #include "web_search.hpp"
+
+namespace fs = std::filesystem;
 
 using namespace lc;
 
@@ -101,6 +108,8 @@ std::string pick_model(OllamaClient& client, const std::string& preset) {
     std::cout << "Available models:\n";
     for (size_t i = 0; i < models.size(); ++i)
         std::cout << "  " << (i + 1) << ") " << models[i] << "\n";
+    std::cout << "(tip: for the strongest native tool-calling, try an Ornith-1 "
+                 "GGUF — reasoning + recommended sampling auto-enable.)\n";
 
     while (true) {
         std::cout << "Select model [1-" << models.size() << "]: " << std::flush;
@@ -130,7 +139,7 @@ Conversation::Summarizer make_summarizer(OllamaClient& client,
         req.push_back({Role::User,
                        "Summarize this conversation:\n" + body.str()});
         try {
-            return client.chat(model, req, nullptr);
+            return client.chat(model, req, nullptr).content;
         } catch (...) {
             return "";  // fall back to plain eviction
         }
@@ -144,14 +153,39 @@ const char* kHelpText =
     "  /build   enter build mode (can write files / run commands)\n"
     "  /learn   scan the project and write its notes (.local_code/PROJECT.md)\n"
     "  /project show the project root and notes status\n"
+    "  /undo    revert the last file write/edit\n"
+    "  /compact summarize the conversation now and shrink the context\n"
+    "  /yolo    toggle auto-accept (run tools without confirmation)\n"
     "  /reset   clear the conversation (keeps system prompt)\n"
     "  /model   show the active model\n"
     "  /quit    exit\n"
+    "Custom commands: drop a Markdown file in .local_code/commands/ (foo.md ->\n"
+    "  /foo); its text is sent to the agent ($ARGS becomes any trailing text).\n"
     "Anything else is sent to the agent.\n";
+
+// Load custom slash commands from <dir>/*.md: filename stem -> file contents.
+std::map<std::string, std::string> load_commands(const std::string& dir) {
+    std::map<std::string, std::string> out;
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return out;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file(ec) || e.path().extension() != ".md") continue;
+        std::ifstream f(e.path(), std::ios::binary);
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        out[e.path().stem().string()] = ss.str();
+    }
+    return out;
+}
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Adopt the user's locale so ncurses (wide build) decodes/renders UTF-8 in
+    // the TUI — without this, multibyte glyphs like "—" show as mojibake.
+    std::setlocale(LC_ALL, "");
+
     Config cfg;
     bool exit_now = false;
     if (!Config::parse(argc, argv, cfg, exit_now)) return 2;
@@ -159,12 +193,20 @@ int main(int argc, char** argv) {
 
     OllamaClient client(cfg.host);
 
+    // --gpu starts on the Ornith model (sized to fit the GPU) unless the user
+    // pinned a different model with --model.
+    if (cfg.fit_gpu && cfg.model.empty()) cfg.model = kGpuFitModel;
+
     try {
         cfg.model = pick_model(client, cfg.model);
     } catch (const std::exception& e) {
         std::cerr << "Startup error: " << e.what() << "\n";
         return 1;
     }
+
+    // Apply model-specific defaults (Ornith-1: thinking + recommended sampling)
+    // for any options the user left unset.
+    const bool tuned = cfg.apply_model_defaults();
 
     // Resolve web search: probe the local SearXNG unless disabled. A refused
     // connection returns instantly, so there's no penalty when it isn't running.
@@ -214,13 +256,26 @@ int main(int argc, char** argv) {
         console = std::make_unique<PlainConsole>();
     }
 
-    Agent agent(client, convo, cfg, build_prompt, plan_prompt, *console);
+    // Allowlist, undo checkpoints, and custom commands live under .local_code
+    // (relative to the project root we chdir'd into, or the cwd otherwise).
+    PermissionStore perms(".local_code/permissions");
+    UndoStack undo(".local_code/backups");
+    auto commands = load_commands(".local_code/commands");
+
+    Agent agent(client, convo, cfg, build_prompt, plan_prompt, *console, perms,
+                undo);
 
     console->print(std::string("\nlocal_code — agent on '") + cfg.model +
                    "' (budget " + std::to_string(cfg.budget_tokens) + " tok" +
                    (cfg.yolo ? ", yolo" : "") +
                    (agent.plan_mode() ? ", PLAN" : "") +
                    (cfg.web_enabled ? ", web" : "") +
+                   (cfg.think ? ", think" : "") +
+                   (cfg.num_ctx > 0
+                        ? ", ctx " + std::to_string(cfg.num_ctx)
+                        : "") +
+                   (cfg.fit_gpu ? ", gpu-fit" : "") +
+                   (tuned ? ", ornith-tuned" : "") +
                    "). /help for commands.\n");
 
     while (true) {
@@ -286,6 +341,52 @@ int main(int argc, char** argv) {
         if (input == "/reset") {
             convo.reset();
             console->print("Conversation cleared.\n");
+            continue;
+        }
+        if (input == "/undo") {
+            auto msg = undo.undo();
+            console->print(msg ? (*msg + "\n") : "Nothing to undo.\n");
+            continue;
+        }
+        if (input == "/compact") {
+            size_t n = convo.compact();
+            console->print(n ? ("Compacted " + std::to_string(n) +
+                                " turn(s) into the running summary.\n")
+                             : "Nothing to compact yet.\n");
+            continue;
+        }
+        if (input == "/yolo") {
+            bool on = !agent.yolo();
+            agent.set_yolo(on);
+            console->print(on ? "Auto-accept ON — tools run without "
+                                "confirmation. /yolo again to turn off.\n"
+                              : "Auto-accept OFF — tools ask for confirmation "
+                                "again.\n");
+            continue;
+        }
+
+        // Custom slash commands from .local_code/commands/*.md. Reaching here
+        // means it's a '/...' that isn't a built-in, so resolve or report it
+        // rather than sending the literal command to the model.
+        if (input[0] == '/') {
+            std::string name = input.substr(1), args;
+            if (size_t sp = name.find_first_of(" \t"); sp != std::string::npos) {
+                args = name.substr(sp + 1);
+                name = name.substr(0, sp);
+            }
+            auto it = commands.find(name);
+            if (it == commands.end()) {
+                console->print("Unknown command: " + input +
+                               "  (/help for the list)\n");
+                continue;
+            }
+            std::string prompt_text = it->second;
+            if (size_t pos = prompt_text.find("$ARGS");
+                pos != std::string::npos)
+                prompt_text.replace(pos, 5, args);
+            else if (!args.empty())
+                prompt_text += "\n\n" + args;
+            agent.handle(prompt_text);
             continue;
         }
 

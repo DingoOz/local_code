@@ -55,6 +55,7 @@ container (Docker) configured for JSON API access on `127.0.0.1:8888`.
 ./build/local_code --budget 2048   # tighter context budget for weak models
 ./build/local_code --yolo          # skip y/N confirmation (dangerous)
 ./build/local_code --plan          # start in planning mode (no changes)
+./build/local_code --gpu           # Ornith with a context that fits an 8 GB GPU
 ./build/local_code --system my_prompt.txt
 ```
 
@@ -68,7 +69,13 @@ container (Docker) configured for JSON API access on `127.0.0.1:8888`.
 | `--system FILE` | Override the built-in system prompt |
 | `--yolo` | Auto-execute tools without confirmation |
 | `--plan` | Start in planning mode (no writes/commands) |
-| `--think` | Enable model "thinking" (off by default) |
+| `--think` | Enable model "thinking" (off by default; auto-on for Ornith) |
+| `--no-think` | Disable thinking (overrides the Ornith auto-enable) |
+| `--temperature F` | Sampling temperature (Ornith default `0.6`) |
+| `--top-p F` | Nucleus sampling `top_p` (Ornith default `0.95`) |
+| `--top-k N` | Top-k sampling (Ornith default `20`) |
+| `--num-ctx N` | Context window in tokens (Ornith defaults to its native `262144`) |
+| `--gpu` | Start on Ornith with a context (`32768`) sized to stay fully on an 8 GB GPU; implies the Ornith model unless `--model` is given |
 | `--no-tui` | Disable the ncurses TUI (plain output) |
 | `--searxng URL` | SearXNG base URL (default `http://localhost:8888`) |
 | `--web` | Force-enable web search (skip the probe) |
@@ -78,14 +85,17 @@ container (Docker) configured for JSON API access on `127.0.0.1:8888`.
 
 ### REPL commands
 
-`/help` `/plan` `/build` `/learn` `/project` `/reset` `/model` `/quit`
+`/help` `/plan` `/build` `/learn` `/project` `/undo` `/compact` `/yolo`
+`/reset` `/model` `/quit` — plus any custom `/name` from
+`.local_code/commands/` (see below).
 
 ### Interface
 
 On a real terminal the program runs as a full-screen **ncurses TUI**: a border
 around the screen, a scrolling conversation area, inline input with history
-(↑/↓), and a **bottom status bar showing live GPU utilization and VRAM usage**
-(polled from `nvidia-smi` on a background thread). When stdin/stdout are piped
+(↑/↓), and a **bottom status bar showing live GPU utilization, VRAM usage, and
+generation speed (tokens/sec)** (GPU stats polled from `nvidia-smi` on a
+background thread; tok/s measured live while the model streams). When stdin/stdout are piped
 or redirected — or with `--no-tui` — it falls back to a plain line-based stream,
 so scripting and non-interactive use still work.
 
@@ -99,6 +109,66 @@ tool is advertised to the model (in build *and* planning mode). Enable it the
 easy way with `./install.sh`, or point at an existing instance with
 `--searxng URL`. A refused connection is instant, so there's no startup penalty
 when it isn't running.
+
+### Ornith-1 (native tool-calling)
+
+[Ornith-1](https://github.com/deepreinforce-ai/Ornith-1) is a family of agentic
+coding models trained to emit **well-formed native function calls** and a
+separate reasoning stream. Its 9B is published as **GGUF for Ollama**, so it runs
+through the same local path as any other model:
+
+```sh
+ollama pull <ornith-1-gguf>        # whatever tag you imported it under
+./build/local_code --model <ornith-1-gguf>
+```
+
+When the model name contains `ornith`, the app auto-enables thinking, applies
+Ornith's recommended sampling (`temperature 0.6 / top_p 0.95 / top_k 20`), and
+sets the context window to Ornith's native **256K** (`num_ctx 262144`) — for any
+of those you didn't set explicitly. The startup banner shows `ctx 262144` and
+`ornith-tuned`. Override any of them with `--temperature/--top-p/--top-k/--no-think`;
+a 256K KV cache is large, so pass a smaller `--num-ctx` (e.g. `16384`) if it
+doesn't fit your VRAM — or use `--gpu`, which selects Ornith and sets a context
+(`32768`) measured to keep the 9B Q4_K_M weights fully on an 8 GB GPU.
+
+**Native vs. text tool-calling.** On every turn the app advertises a real
+`tools[]` schema (the same `read_file` / `list_dir` / `write_file` /
+`run_command` / `ask_user` / `web_search` / `remember` set, filtered by mode).
+Models trained for function-calling — Ornith, `qwen2.5-coder`, etc. — reply with
+structured `tool_calls`, which the agent executes directly (no JSON-repair
+needed) and rounds back so the model sees its own call. Models that instead emit
+the legacy ` ```tool ` text block still work unchanged via the forgiving
+text-protocol parser, so nothing regresses for weaker models. Reasoning is
+streamed dimmed but kept out of the saved history.
+
+### Editing, search, safety & workflow
+
+A batch of Claude Code-inspired features, all local and built on the same tool
+schema:
+
+- **`edit_file`** — targeted `{path, old_string, new_string}` replacement.
+  `old_string` must occur **exactly once** (otherwise it errors and asks for
+  more context). Far cheaper and safer than rewriting a whole file with
+  `write_file`; prefer it for changes to existing files.
+- **`find_files` / `search_code`** — locate files by glob and grep file
+  contents (`path:line: text`), so the model doesn't have to guess shell
+  incantations. Read-only, available in planning mode too.
+- **Diff preview** — `write_file` and `edit_file` show a colored `-`/`+` diff
+  (not a full-file dump) before you confirm.
+- **Permission allowlist** — confirmations offer `y` / `N` / `a`(lways).
+  Choosing **a** remembers the action (commands by first word, e.g. `cmd:git`;
+  file writes as `write`) in `.local_code/permissions`, so it won't ask again —
+  this session or future ones.
+- **Undo** — every write/edit is checkpointed to `.local_code/backups/`; `/undo`
+  reverts the last one (restoring the old contents, or deleting a file that was
+  freshly created). No sandbox, so this is the safety net.
+- **`/yolo`** — toggle auto-accept (skip confirmations) mid-session, without
+  restarting with `--yolo`.
+- **`/compact`** — summarize the conversation now and shrink the context, and a
+  **`ctx NN%`** indicator in the status bar shows how full the history budget is.
+- **Custom commands** — drop a Markdown file in `.local_code/commands/`;
+  `foo.md` becomes `/foo`, and its text is sent to the agent (with `$ARGS`
+  replaced by any text after the command). Reusable prompts, no rebuild.
 
 ### Project awareness
 
@@ -130,24 +200,34 @@ ready to implement. The prompt shows `you (plan)>` while planning.
   most recent turns verbatim, and folds older turns into a rolling summary
   (produced by a one-shot model call) once the budget is exceeded. The system
   prompt is always retained on top.
-- **tools** — parses a ` ```tool {json} ``` ` block from the model and executes
-  `read_file` / `list_dir` / `write_file` / `run_command` / `ask_user` /
-  `web_search` / `remember`, returning the result (truncated to caps). The parser is forgiving of weak-model
-  output: brace-matched extraction, JSON-escape repair (raw newlines, backslash
-  line-continuations), and the common name placements — `{"name":..,"args":..}`,
-  flat `{"name":..,"path":..}`, and name-on-its-own-line `write_file\n{..}`.
-  **`write_file` content comes from a separate ` ```file ` fence**, not a JSON
-  string — packing multi-line source into JSON is the single biggest source of
-  weak-model failures (missing quotes, bad escapes, truncation), and a raw fence
-  sidesteps all of it. Writes and commands require y/N confirmation, and are
-  disabled in planning mode.
+- **tools** — advertises a real `tools[]` schema to the model and executes
+  `read_file` / `list_dir` / `find_files` / `search_code` / `write_file` /
+  `edit_file` / `run_command` / `ask_user` / `web_search` / `remember`,
+  returning the result (truncated to caps). Two request formats are accepted,
+  sharing one execution path:
+  - **Native `tool_calls`** (Ollama function-calling) — what Ornith and other
+    tool-trained models emit; parsed straight from `message.tool_calls`, no
+    repair needed, and rounded back to the model on the next turn.
+  - **Legacy ` ```tool {json} ``` ` text block** — the fallback for weak models.
+    The parser is forgiving: brace-matched extraction, JSON-escape repair (raw
+    newlines, backslash line-continuations), and the common name placements —
+    `{"name":..,"args":..}`, flat `{"name":..,"path":..}`, and
+    name-on-its-own-line `write_file\n{..}`. Here **`write_file` content comes
+    from a separate ` ```file ` fence**, not a JSON string — packing multi-line
+    source into JSON is the single biggest source of weak-model failures (missing
+    quotes, bad escapes, truncation), and a raw fence sidesteps all of it.
 
-- **thinking** — many local models (gemma included) are "thinking" models that
-  emit reasoning into a separate field and frequently leave the visible answer
-  empty. Thinking is therefore **off by default** (a faster, reliable path for
-  weak models); `--think` re-enables it and streams the reasoning too.
-- **agent** — loop: query model → if it emitted a tool call, run it and feed the
-  result back; otherwise the reply is the final answer. The result of each tool
+  Writes and commands require y/N confirmation, and are disabled (and hidden from
+  the schema) in planning mode.
+
+- **thinking** — many local models (gemma included) and reasoning models like
+  Ornith emit their reasoning into a separate field. The reasoning is streamed
+  **dimmed** and then dropped from history (it never pollutes tool parsing or the
+  context budget). Thinking is **off by default** (a faster, reliable path for
+  weak models that otherwise leave the visible answer empty) but auto-enables for
+  Ornith; toggle with `--think` / `--no-think`.
+- **agent** — loop: query model → if it emitted a tool call (native or text),
+  run it and feed the result back; otherwise the reply is the final answer. The result of each tool
   is also previewed to you (compiler errors, command output, exit codes — file
   reads are summarized as a byte count). If the model repeats the exact same
   tool call without progress, the loop stops and hands control back to you. If

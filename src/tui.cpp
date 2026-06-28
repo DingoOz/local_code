@@ -127,6 +127,16 @@ void TuiConsole::draw_status() {
         std::snprintf(buf, sizeof buf, " GPU: nvidia-smi unavailable ");
     }
     std::string s(buf);
+    if (ctx_pct_ >= 0.0) {
+        char cb[32];
+        std::snprintf(cb, sizeof cb, " |  ctx %d%% ", (int)(ctx_pct_ + 0.5));
+        s += cb;
+    }
+    if (tps_ > 0.0) {
+        char tb[48];
+        std::snprintf(tb, sizeof tb, " |  %.1f tok/s ", tps_);
+        s += tb;
+    }
     int w = COLS - 2;
     if ((int)s.size() > w) s = s.substr(0, w);
     wattron(st, A_BOLD);
@@ -302,10 +312,27 @@ std::optional<std::string> TuiConsole::input(const std::string& prompt) {
     return line;
 }
 
-bool TuiConsole::confirm(const std::string& prompt) {
-    auto line = input(prompt + " [y/N] ");
-    if (!line) return false;
-    return *line == "y" || *line == "Y" || *line == "yes";
+Confirm TuiConsole::confirm(const std::string& prompt, bool allow_always) {
+    // Discard any keys typed while the model was generating so a safety prompt
+    // is never auto-answered by stale type-ahead.
+    flushinp();
+    auto line = input(prompt + (allow_always ? " [y/N/a=always] " : " [y/N] "));
+    if (!line) return Confirm::No;
+    // Lenient parse: first non-space character decides (handles a leaked
+    // leading space like " y", which previously read as "No").
+    for (unsigned char c : *line) {
+        if (std::isspace(c)) continue;
+        if (allow_always && (c == 'a' || c == 'A')) return Confirm::Always;
+        return (c == 'y' || c == 'Y') ? Confirm::Once : Confirm::No;
+    }
+    return Confirm::No;
 }
+
+void TuiConsole::set_tps(double tokens_per_sec) {
+    // Touched only on the main loop thread (same as draw_status); no lock needed.
+    tps_ = tokens_per_sec;
+}
+
+void TuiConsole::set_ctx(double percent_used) { ctx_pct_ = percent_used; }
 
 }  // namespace lc

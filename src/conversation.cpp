@@ -27,9 +27,29 @@ void Conversation::add(Role role, std::string content) {
     turns_.push_back({role, std::move(content)});
 }
 
+void Conversation::add(Message msg) {
+    turns_.push_back(std::move(msg));
+}
+
 void Conversation::reset() {
     turns_.clear();
     summary_.clear();
+}
+
+size_t Conversation::compact() {
+    if (turns_.empty()) return 0;
+    const size_t n = turns_.size();
+    if (summarize_) {
+        std::vector<Message> to_sum;
+        if (!summary_.empty())
+            to_sum.push_back({Role::System, "Summary so far:\n" + summary_});
+        to_sum.insert(to_sum.end(), turns_.begin(), turns_.end());
+        std::string s = summarize_(to_sum);
+        if (!s.empty()) summary_ = std::move(s);
+    }
+    // Drop the turns regardless: even without a summarizer this bounds context.
+    turns_.clear();
+    return n;
 }
 
 int Conversation::budget_for_turns() const {

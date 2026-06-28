@@ -20,7 +20,10 @@ public:
 
     void print(const std::string& text) override;
     std::optional<std::string> input(const std::string& prompt) override;
-    bool confirm(const std::string& prompt) override;
+    Confirm confirm(const std::string& prompt,
+                    bool allow_always = false) override;
+    void set_tps(double tokens_per_sec) override;
+    void set_ctx(double percent_used) override;
 
 private:
     void layout();
@@ -39,6 +42,8 @@ private:
     std::chrono::steady_clock::time_point last_status_{};
     int cur_pair_ = 0;        // current ncurses color-pair (0 = default)
     bool cur_bold_ = false;   // current bold state
+    double tps_ = 0.0;        // latest generation speed (tokens/sec), 0 = hide
+    double ctx_pct_ = -1.0;   // context-window usage %, <0 = hide
 };
 
 }  // namespace lc
