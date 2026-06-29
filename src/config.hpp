@@ -14,11 +14,20 @@ constexpr int kGpuFitNumCtx = 40960;
 // Model selected by --gpu when the user does not pass --model.
 constexpr const char* kGpuFitModel = "ornith:latest";
 
-// GPU-fit context when the Ollama KV cache is quantized (q8_0/q4_0). Measured
-// on an idle 8 GB GPU with q8_0: 72K ctx -> ~6.8 GB stays 100% on the GPU, while
-// ~76K spills to the CPU. Default 64K (~6.6 GB) leaves ~1.6 GB headroom below
-// the cliff; push it with e.g. `--gpu --kv-cache q8_0 --num-ctx 73728`.
+// GPU-fit context when the Ollama KV cache is quantized to q8_0. Measured on an
+// idle 8 GB GPU: 72K ctx -> ~6.8 GB stays 100% on the GPU, while ~76K spills to
+// the CPU. Default 64K (~6.6 GB) leaves ~1.6 GB headroom below the cliff; push
+// it with e.g. `--gpu --kv-cache q8_0 --num-ctx 73728`.
 constexpr int kGpuFitNumCtxQuant = 65536;  // 64 * 1024
+
+// GPU-fit context when the Ollama KV cache is quantized to q4_0. A q4_0 KV entry
+// is ~half the bytes of q8_0, but the per-context compute buffers scale too, so
+// the usable context is well short of 2x the q8_0 window. Measured on an idle
+// 8 GB RTX 3070 (flash attention on): 116K ctx -> ~6.9 GB stays 100% on the GPU,
+// while ~118K spills to the CPU (and 128K spills hard). Default 104K (~6.7 GB)
+// keeps the same ~11% backoff below the cliff as the q8_0 default; push it (and
+// watch `ollama ps`) with e.g. `--gpu --kv-cache q4_0 --num-ctx 118784`.
+constexpr int kGpuFitNumCtxQuantQ4 = 106496;  // 104 * 1024
 
 struct Config {
     std::string host = "http://localhost:11434";

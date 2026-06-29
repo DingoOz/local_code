@@ -14,14 +14,17 @@ namespace {
 // happened — especially failures (compiler errors, non-zero exits) — without
 // dumping the full contents of a large file read back to the screen.
 void show_result(const ToolCall& call, const ToolResult& res, Console& con) {
-    con.print(std::string("\033[90m") + (res.ok ? "ok" : "failed") +
-              "\033[0m\n");
+    // Claude-Code-style result branch: a dim "⎿" leader, then a green "ok" or a
+    // red "failed", followed by an indented preview of the output.
+    con.print(std::string("\033[90m  ⎿ \033[0m") +
+              (res.ok ? "\033[32mok\033[0m" : "\033[31mfailed\033[0m"));
 
     if (call.name == "read_file" && res.ok) {
         con.print("\033[90m  (" + std::to_string(res.output.size()) +
                   " bytes read)\033[0m\n");
         return;
     }
+    con.print("\n");
     if (res.output.empty()) return;
 
     constexpr size_t kMaxLines = 15, kMaxChars = 1200;
@@ -30,12 +33,12 @@ void show_result(const ToolCall& call, const ToolResult& res, Console& con) {
     while (pos < body.size() && shown < kMaxLines) {
         size_t nl = body.find('\n', pos);
         if (nl == std::string::npos) nl = body.size();
-        con.print("\033[90m  " + body.substr(pos, nl - pos) + "\033[0m\n");
+        con.print("\033[90m     " + body.substr(pos, nl - pos) + "\033[0m\n");
         pos = nl + 1;
         ++shown;
     }
     if (pos < res.output.size() || res.output.size() > kMaxChars)
-        con.print("\033[90m  ... [truncated]\033[0m\n");
+        con.print("\033[90m     ... [truncated]\033[0m\n");
 }
 
 }  // namespace
@@ -75,7 +78,6 @@ void Agent::handle(const std::string& user_input) {
     convo_.add(Role::User, user_input);
 
     ToolCtx tctx{cfg_, console_, perms_, undo_};
-    std::string last_sig;   // detect a model stuck repeating tool call(s)
     int empty_retries = 0;  // some local models emit a blank turn mid-task
     for (int turn = 0; turn < cfg_.max_tool_turns; ++turn) {
         std::vector<Message> window = convo_.window();
@@ -89,7 +91,7 @@ void Agent::handle(const std::string& user_input) {
                          : 0.0;
         console_.set_ctx(pct > 100.0 ? 100.0 : pct);
 
-        console_.print("\n\033[36m" + cfg_.model + ":\033[0m ");
+        console_.print("\n\033[1;36m" + cfg_.model + "\033[0m\033[36m:\033[0m ");
 
         // Strip leaked special-token markers from the visible answer as it
         // streams. Reasoning (thinking) is shown dimmed and never persisted to
@@ -174,25 +176,14 @@ void Agent::handle(const std::string& user_input) {
             Message am{Role::Assistant, reply, result.raw_tool_calls_json, {}};
             convo_.add(std::move(am));
 
-            // Stuck-loop guard over the whole batch of calls this turn.
-            std::string sig;
-            for (const auto& n : result.tool_calls)
-                sig += n.name + "\n" + n.arguments_json + "\n";
-            if (sig == last_sig) {
-                console_.print(
-                    "\033[33m[the model repeated the same tool call(s) without "
-                    "making progress — stopping. Tell it how to proceed.]\033[0m\n");
-                return;
-            }
-            last_sig = sig;
-
             for (const auto& n : result.tool_calls) {
-                console_.print("\033[33m[tool] " + n.name + "\033[0m\n");
+                console_.print("\033[32m⏺\033[0m \033[1m" + n.name + "\033[0m\n");
                 auto call = tool_call_from_args(n.name, n.arguments_json);
                 ToolResult res;
                 if (!call) {
                     res = {false, "Error: unknown tool '" + n.name + "'."};
-                    console_.print("\033[90mfailed\033[0m\n");
+                    console_.print(
+                        "\033[90m  ⎿ \033[0m\033[31mfailed\033[0m\n");
                 } else {
                     res = execute_tool(*call, tctx);
                     show_result(*call, res, console_);
@@ -224,19 +215,7 @@ void Agent::handle(const std::string& user_input) {
         auto call = parse_tool_call(reply);
         if (!call) return;  // plain answer => user's turn
 
-        // Break out if the model just repeated the exact same tool call — a
-        // weak model retrying a failing command would otherwise loop forever.
-        // Checked before executing so a side-effecting command isn't re-run.
-        const std::string sig = call->name + "\n" + call->raw_args_json;
-        if (sig == last_sig) {
-            console_.print("\033[33m[the model repeated the same " + call->name +
-                           " call without making progress — stopping. Tell it "
-                           "how to proceed.]\033[0m\n");
-            return;
-        }
-        last_sig = sig;
-
-        console_.print("\033[33m[tool] " + call->name + "\033[0m\n");
+        console_.print("\033[32m⏺\033[0m \033[1m" + call->name + "\033[0m\n");
         ToolResult res = execute_tool(*call, tctx);
         show_result(*call, res, console_);
 

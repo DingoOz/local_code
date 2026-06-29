@@ -128,10 +128,12 @@ std::string pick_model(OllamaClient& client, Config& cfg) {
               << "), 40K context to fit an 8 GB GPU\n"
                  "  q) ornith-gpu-fit-large — Ornith (" << ornith
               << "), 64K context via a q8_0 KV cache (reconfigures Ollama, sudo)\n"
+                 "  x) ornith-gpu-fit-xl    — Ornith (" << ornith
+              << "), 104K context via a q4_0 KV cache (reconfigures Ollama, sudo)\n"
                  "(tip: Ornith auto-enables reasoning + recommended sampling.)\n";
 
     while (true) {
-        std::cout << "Select [1-" << models.size() << ", d, g, q]: "
+        std::cout << "Select [1-" << models.size() << ", d, g, q, x]: "
                   << std::flush;
         std::string line;
         if (!std::getline(std::cin, line)) std::exit(0);
@@ -144,6 +146,11 @@ std::string pick_model(OllamaClient& client, Config& cfg) {
         if (sel == "q" || sel == "Q") {
             cfg.fit_gpu = true;
             cfg.kv_cache = "q8_0";
+            return ornith;
+        }
+        if (sel == "x" || sel == "X") {
+            cfg.fit_gpu = true;
+            cfg.kv_cache = "q4_0";
             return ornith;
         }
         try {
@@ -310,23 +317,24 @@ Conversation::Summarizer make_summarizer(OllamaClient& client,
 }
 
 const char* kHelpText =
-    "Commands:\n"
-    "  /help    show this help\n"
-    "  /menu    open the menu (start the SearXNG web-search server) — also F2\n"
-    "  (scroll the conversation with PgUp/PgDn, the mouse wheel, or Home/End)\n"
-    "  /plan    enter planning mode (design & ask questions, no changes)\n"
-    "  /build   enter build mode (can write files / run commands)\n"
-    "  /learn   scan the project and write its notes (.local_code/PROJECT.md)\n"
-    "  /project show the project root and notes status\n"
-    "  /undo    revert the last file write/edit\n"
-    "  /compact summarize the conversation now and shrink the context\n"
-    "  /yolo    toggle auto-accept (run tools without confirmation)\n"
-    "  /reset   clear the conversation (keeps system prompt)\n"
-    "  /model   show the active model\n"
-    "  /quit    exit\n"
-    "Custom commands: drop a Markdown file in .local_code/commands/ (foo.md ->\n"
+    "\033[1mCommands\033[0m\n"
+    "  \033[32m/help\033[0m    show this help\n"
+    "  \033[32m/menu\033[0m    open the menu (start the SearXNG web-search server) — also F2\n"
+    "  \033[90m(scroll the conversation with PgUp/PgDn, the mouse wheel, or Home/End)\033[0m\n"
+    "  \033[32m/plan\033[0m    enter planning mode (design & ask questions, no changes)\n"
+    "  \033[32m/build\033[0m   enter build mode (can write files / run commands)\n"
+    "  \033[32m/init\033[0m    scan the project and write a CLAUDE.md guide at its root\n"
+    "  \033[32m/learn\033[0m   scan the project and write its notes (.local_code/PROJECT.md)\n"
+    "  \033[32m/project\033[0m show the project root and notes status\n"
+    "  \033[32m/undo\033[0m    revert the last file write/edit\n"
+    "  \033[32m/compact\033[0m summarize the conversation now and shrink the context\n"
+    "  \033[32m/yolo\033[0m    toggle auto-accept (run tools without confirmation)\n"
+    "  \033[32m/reset\033[0m   clear the conversation (keeps system prompt)\n"
+    "  \033[32m/model\033[0m   show the active model\n"
+    "  \033[32m/quit\033[0m    exit\n"
+    "\033[90mCustom commands: drop a Markdown file in .local_code/commands/ (foo.md ->\n"
     "  /foo); its text is sent to the agent ($ARGS becomes any trailing text).\n"
-    "Anything else is sent to the agent.\n";
+    "Anything else is sent to the agent.\033[0m\n";
 
 // Load custom slash commands from <dir>/*.md: filename stem -> file contents.
 std::map<std::string, std::string> load_commands(const std::string& dir) {
@@ -430,7 +438,10 @@ int main(int argc, char** argv) {
     std::unique_ptr<Console> console;
     if (use_tui) {
         gpu = std::make_unique<GpuMonitor>();
-        console = std::make_unique<TuiConsole>(*gpu, cfg.model);
+        // KV-cache quant overlaid on the context bar: empty cfg means the server
+        // default, fp16.
+        console = std::make_unique<TuiConsole>(
+            *gpu, cfg.model, cfg.kv_cache.empty() ? "fp16" : cfg.kv_cache);
     } else {
         console = std::make_unique<PlainConsole>();
     }
@@ -444,24 +455,32 @@ int main(int argc, char** argv) {
     Agent agent(client, convo, cfg, build_prompt, plan_prompt, *console, perms,
                 undo);
 
-    console->print(std::string("\nlocal_code — agent on '") + cfg.model +
-                   "' (budget " + std::to_string(cfg.budget_tokens) + " tok" +
-                   (cfg.yolo ? ", yolo" : "") +
-                   (agent.plan_mode() ? ", PLAN" : "") +
-                   (cfg.web_enabled ? ", web" : "") +
-                   (cfg.think ? ", think" : "") +
-                   (cfg.num_ctx > 0
-                        ? ", ctx " + std::to_string(cfg.num_ctx)
-                        : "") +
-                   (cfg.fit_gpu ? ", gpu-fit" : "") +
-                   (!cfg.kv_cache.empty() ? ", kv " + cfg.kv_cache : "") +
-                   (tuned ? ", ornith-tuned" : "") +
-                   "). /help for commands.\n");
+    // Build the dim "details" line: a "·"-separated list of the active modes.
+    std::vector<std::string> bits;
+    bits.push_back("budget " + std::to_string(cfg.budget_tokens) + " tok");
+    if (cfg.num_ctx > 0) bits.push_back("ctx " + std::to_string(cfg.num_ctx));
+    if (cfg.fit_gpu) bits.push_back("gpu-fit");
+    if (!cfg.kv_cache.empty()) bits.push_back("kv " + cfg.kv_cache);
+    if (cfg.yolo) bits.push_back("yolo");
+    if (agent.plan_mode()) bits.push_back("PLAN");
+    if (cfg.web_enabled) bits.push_back("web");
+    if (cfg.think) bits.push_back("think");
+    if (tuned) bits.push_back("ornith-tuned");
+    std::string details;
+    for (size_t i = 0; i < bits.size(); ++i)
+        details += (i ? "  ·  " : "") + bits[i];
+
+    console->print(
+        std::string("\n\033[1;35m✻ local_code\033[0m"
+                    "  \033[90m— a local coding agent\033[0m\n") +
+        "  \033[90mmodel\033[0m \033[36m" + cfg.model + "\033[0m\n"
+        "  \033[90m" + details + "\033[0m\n"
+        "  \033[90mtype\033[0m \033[32m/help\033[0m \033[90mfor commands\033[0m\n");
 
     while (true) {
         const std::string prompt = agent.plan_mode()
-                                       ? "\n\033[35myou (plan)>\033[0m "
-                                       : "\n\033[32myou>\033[0m ";
+                                       ? "\n\033[1;35myou (plan)\033[0m\033[1m›\033[0m "
+                                       : "\n\033[1;32myou\033[0m\033[1m›\033[0m ";
         auto in = console->input(prompt);
         if (!in) break;  // EOF / Ctrl-D
         std::string input = *in;
@@ -503,6 +522,30 @@ int main(int argc, char** argv) {
                                (nf.good() ? "present" : "not created yet") +
                                "\n");
             }
+            continue;
+        }
+        if (input == "/init") {
+            if (agent.plan_mode()) {
+                console->print(
+                    "/init writes a file, so it needs build mode. Run /build "
+                    "first, then /init.\n");
+                continue;
+            }
+            agent.handle(
+                "Initialize this codebase for future agent sessions by writing a "
+                "CLAUDE.md file at the project root. First explore the project: "
+                "use list_dir and read_file to inspect the layout and the key "
+                "files (README, build/config files such as CMakeLists.txt / "
+                "package.json / Makefile, and the main entry points). Then call "
+                "write_file for CLAUDE.md with concise Markdown covering: (1) a "
+                "one-paragraph overview of what the project is; (2) the exact "
+                "commands to build, run, lint, and test it; (3) the high-level "
+                "architecture and the key files/modules and how they fit "
+                "together; (4) important conventions, patterns, and gotchas a "
+                "contributor must know. Keep it focused and accurate — document "
+                "only what you verified in the code, not guesses. If a CLAUDE.md "
+                "already exists, read it first and improve it rather than "
+                "discarding useful content.");
             continue;
         }
         if (input == "/learn") {

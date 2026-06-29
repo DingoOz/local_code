@@ -150,8 +150,9 @@ bool Config::apply_model_defaults() {
     // --num-ctx or --gpu if it won't fit VRAM).
     if (num_ctx == 0) {
         if (fit_gpu) {
-            const bool quant = (kv_cache == "q8_0" || kv_cache == "q4_0");
-            num_ctx = quant ? kGpuFitNumCtxQuant : kGpuFitNumCtx;
+            if (kv_cache == "q4_0")      num_ctx = kGpuFitNumCtxQuantQ4;
+            else if (kv_cache == "q8_0") num_ctx = kGpuFitNumCtxQuant;
+            else                         num_ctx = kGpuFitNumCtx;
         } else {
             num_ctx = 262144;  // 256 * 1024
         }

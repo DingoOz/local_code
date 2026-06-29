@@ -46,8 +46,11 @@ constexpr int kFgPairBase = 2;
 
 }  // namespace
 
-TuiConsole::TuiConsole(GpuMonitor& gpu, std::string model)
-    : gpu_(gpu), model_(std::move(model)), history_path_(history_file()) {
+TuiConsole::TuiConsole(GpuMonitor& gpu, std::string model, std::string kv_cache)
+    : gpu_(gpu),
+      model_(std::move(model)),
+      kv_label_(std::move(kv_cache)),
+      history_path_(history_file()) {
     // Load persisted history.
     std::ifstream f(history_path_);
     std::string line;
@@ -57,6 +60,7 @@ TuiConsole::TuiConsole(GpuMonitor& gpu, std::string model)
     initscr();
     cbreak();
     noecho();
+    curs_set(1);  // keep a visible (blinking) cursor at the input position
     keypad(stdscr, TRUE);
     // Report mouse-wheel events so the conversation can be scrolled with the
     // wheel (the terminal's own scrollback is unavailable on the alt-screen).
@@ -165,9 +169,25 @@ void TuiConsole::draw_status() {
     }
     std::string s(buf);
     if (ctx_pct_ >= 0.0) {
+        // Context usage as a small bar chart with the KV-cache quantisation
+        // (fp16/q8_0/q4_0) overlaid in the middle of the bar:  ctx [██q8_0░░] 45%
+        constexpr int kCells = 14;
+        double pct = ctx_pct_ < 0 ? 0 : (ctx_pct_ > 100 ? 100 : ctx_pct_);
+        int filled = (int)(pct / 100.0 * kCells + 0.5);
+        const std::string& label = kv_label_;
+        int lstart = (kCells - (int)label.size()) / 2;
+        if (lstart < 0) lstart = 0;
+        std::string bar;
+        for (int i = 0; i < kCells; ++i) {
+            if (i >= lstart && i < lstart + (int)label.size())
+                bar += label[i - lstart];        // overlaid quant label
+            else
+                bar += (i < filled ? "█"     // █ filled
+                                   : "░");    // ░ empty
+        }
         char cb[32];
-        std::snprintf(cb, sizeof cb, " |  ctx %d%% ", (int)(ctx_pct_ + 0.5));
-        s += cb;
+        std::snprintf(cb, sizeof cb, " %d%% ", (int)(pct + 0.5));
+        s += " |  ctx [" + bar + "]" + cb;
     }
     if (tps_ > 0.0) {
         char tb[48];
@@ -191,11 +211,29 @@ void TuiConsole::draw_status() {
         }
     }
     int w = COLS - 2;
-    if ((int)s.size() > w) s = s.substr(0, w);
+    if ((int)s.size() > w) {
+        // Truncate to the bar width without splitting a multi-byte UTF-8 glyph
+        // (the bar/scrollback markers are multibyte), which would render as a
+        // stray replacement character at the edge.
+        int i = 0;
+        while (i < (int)s.size()) {
+            unsigned char c = (unsigned char)s[i];
+            int len = (c & 0x80) == 0      ? 1
+                      : (c & 0xE0) == 0xC0 ? 2
+                      : (c & 0xF0) == 0xE0 ? 3
+                                           : 4;
+            if (i + len > w) break;
+            i += len;
+        }
+        s.resize(i);
+    }
     wattron(st, A_BOLD);
     mvwaddstr(st, 0, 0, s.c_str());
     wattroff(st, A_BOLD);
     wnoutrefresh(st);
+    // Refresh the output pad LAST so the hardware cursor lands at the input
+    // position inside the conversation, not on the status bar.
+    if (out_) show_out();
     doupdate();
 }
 

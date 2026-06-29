@@ -17,7 +17,9 @@ class GpuMonitor;
 // construct when stdin/stdout are a real terminal.
 class TuiConsole : public Console {
 public:
-    TuiConsole(GpuMonitor& gpu, std::string model);
+    // kv_cache is the active Ollama KV-cache quantisation ("fp16"/"q8_0"/"q4_0"),
+    // overlaid onto the context-usage bar in the status line.
+    TuiConsole(GpuMonitor& gpu, std::string model, std::string kv_cache = "fp16");
     ~TuiConsole() override;
 
     void print(const std::string& text) override;
@@ -40,6 +42,7 @@ private:
 
     GpuMonitor& gpu_;
     std::string model_;
+    std::string kv_label_;    // KV-cache quant overlaid on the ctx bar
     void* out_ = nullptr;     // WINDOW* — output pad (scrollback) + input echo
     void* status_ = nullptr;  // WINDOW* — bottom GPU bar
     int pad_rows_ = 0;        // height of the output pad (scrollback depth)
